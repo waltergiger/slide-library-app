@@ -1,35 +1,31 @@
 """Walks a source directory, extracts text from every .pptx/.pdf, renders a
 thumbnail for every slide, and writes it all into the SQLite index.
 
-Slide rendering goes through LibreOffice (headless) + PyMuPDF:
-  .pptx  ->  soffice converts it to a .pdf (one page per slide, laid out
-             exactly as PowerPoint would render it) -> PyMuPDF rasterises
-             each page to a PNG thumbnail.
+Slide rendering is PowerPoint (first choice) or LibreOffice (fallback), see
+`renderers`, plus PyMuPDF:
+  .pptx  ->  the engine converts it to a .pdf (one page per slide, hidden slides
+             included) -> PyMuPDF rasterises each page to a PNG thumbnail.
   .pdf   ->  PyMuPDF rasterises each page directly.
 
-soffice is not thread-safe against itself (concurrent instances fight over
-the user profile dir), so every conversion goes through a single lock and
-gets its own throwaway profile directory.
+With no engine available, decks are still indexed (text search works) but have
+no thumbnails; they get them on the next re-index once an engine is installed.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
-import subprocess
 import tempfile
-import threading
 from pathlib import Path
 
 import fitz  # PyMuPDF
 from pptx import Presentation
 
-from . import db
+from . import db, renderers
 
 log = logging.getLogger("slide-library.indexer")
 
 SUPPORTED_EXTS = {".pptx", ".pptm", ".pdf"}
 THUMB_MAX_WIDTH = 640
-_soffice_lock = threading.Lock()
 
 
 def discover_files(root: str) -> list[Path]:
@@ -49,6 +45,7 @@ def index_source(source_id: int) -> None:
     if source is None:
         return
     db.set_source_status(source_id, "indexing")
+    renderers.reset()  # a re-index retries engines that were switched off after earlier failures
     try:
         root = source["path"]
         if not Path(root).exists():
@@ -73,7 +70,12 @@ def index_source(source_id: int) -> None:
 def _index_one_file(source_id: int, domain: str, path: Path) -> None:
     stat = path.stat()
     if db.unchanged(str(path), stat.st_mtime, stat.st_size):
-        return  # nothing changed since last index
+        # Unchanged files are skipped — except decks that were indexed while no renderer was
+        # installed: once one is, they get their thumbnails on the next re-index.
+        needs_thumbs = (path.suffix.lower() != ".pdf" and db.has_missing_thumbnails(str(path))
+                        and renderers.has_usable_engine())
+        if not needs_thumbs:
+            return
 
     ext = path.suffix.lower()
     if ext == ".pdf":
@@ -81,7 +83,7 @@ def _index_one_file(source_id: int, domain: str, path: Path) -> None:
         thumb_paths = _render_pdf_thumbnails(path)
     else:
         title, slides = _extract_pptx(path)
-        thumb_paths = _render_pptx_thumbnails(path)
+        thumb_paths = _render_pptx_thumbnails(path, expected_pages=len(slides))
 
     hashes = {slide["index"]: _content_hash(slide["text"]) for slide in slides}
     file_id, prior = db.upsert_file(
@@ -179,33 +181,21 @@ def _render_pdf_thumbnails(path: Path) -> dict[int, str]:
     return out
 
 
-def _render_pptx_thumbnails(path: Path) -> dict[int, str]:
+def _render_pptx_thumbnails(path: Path, expected_pages: int) -> dict[int, str]:
     with tempfile.TemporaryDirectory(prefix="slidelib_") as tmp:
-        pdf_path = _convert_to_pdf(path, Path(tmp))
+        # Page N must be slide N; a PDF that doesn't match is rejected (better no thumbnail than the wrong slide's).
+        pdf_path = _convert_to_pdf(path, Path(tmp), expected_pages)
         if pdf_path is None:
             return {}
         doc = fitz.open(str(pdf_path))
-        out = {}
-        for i, page in enumerate(doc):
-            out[i] = _save_thumb(page, f"{path.stem}-{path.stat().st_mtime_ns}-{i}")
-        doc.close()
-        return out
+        try:
+            return {i: _save_thumb(page, f"{path.stem}-{path.stat().st_mtime_ns}-{i}") for i, page in enumerate(doc)}
+        finally:
+            doc.close()
 
 
-def _convert_to_pdf(path: Path, out_dir: Path) -> Path | None:
-    profile_dir = out_dir / "lo_profile"
-    cmd = [
-        "soffice", "--headless", "--norestore", "--nologo", "--nofirststartwizard",
-        f"-env:UserInstallation=file://{profile_dir}",
-        "--convert-to", "pdf", "--outdir", str(out_dir), str(path),
-    ]
-    with _soffice_lock:
-        result = subprocess.run(cmd, capture_output=True, timeout=120)
-    if result.returncode != 0:
-        log.warning("soffice failed for %s: %s", path, result.stderr.decode(errors="replace"))
-        return None
-    candidate = out_dir / (path.stem + ".pdf")
-    return candidate if candidate.exists() else None
+def _convert_to_pdf(path: Path, out_dir: Path, expected_pages: int | None = None) -> Path | None:
+    return renderers.convert_to_pdf(path, out_dir, expected_pages)
 
 
 def _save_thumb(page, name: str) -> str:
@@ -219,7 +209,7 @@ def _save_thumb(page, name: str) -> str:
 class PdfRenderCache:
     """Converts each source .pptx to PDF at most once for the lifetime of the
     context. An export that falls back to images for several slides of the
-    same deck would otherwise re-run a full soffice conversion per slide."""
+    same deck would otherwise re-run a full conversion per slide."""
 
     def __init__(self):
         self._tmp: tempfile.TemporaryDirectory | None = None
@@ -237,11 +227,20 @@ class PdfRenderCache:
         if key not in self._pdfs:
             out_dir = Path(self._tmp.name) / str(len(self._pdfs))
             out_dir.mkdir()
-            pdf = _convert_to_pdf(path, out_dir)
+            pdf = _convert_to_pdf(path, out_dir, _slide_count(path))
             if pdf is None:
-                raise RuntimeError(f"Could not render {path} for export")
+                raise RuntimeError(
+                    f"Could not render {path} for export: no slide renderer is available, or none produced a "
+                    "PDF matching the deck. Install Microsoft PowerPoint or LibreOffice.")
             self._pdfs[key] = pdf
         return self._pdfs[key]
+
+
+def _slide_count(path: Path) -> int | None:
+    try:
+        return len(Presentation(str(path)).slides)
+    except Exception:  # noqa: BLE001 — unreadable for python-pptx: render without page-count validation
+        return None
 
 
 def _page_png(pdf_path: Path, slide_index: int, target_width_px: int) -> bytes:

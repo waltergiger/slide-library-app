@@ -83,6 +83,9 @@
     builder: loadBuilder(),
     slideResults: [],
     panelOpen: readPref(PANEL_KEY) !== "closed",
+    renderers: null,            // {platform, active, engines:[{id,label,installed,usable,problem}]}
+    dismissRendererHelp: false, // popup closed for this session (a banner stays)
+    recheckingRenderers: false,
     zoom: ViewModel.normalizeZoom(readPref(ZOOM_KEY)),
     panelWidth: ViewModel.clampPanelWidth(readPref(PANEL_W_KEY), window.innerWidth),
     dragging: null,
@@ -134,6 +137,7 @@
     state.slideResults = state.selectedDomain === "All domains" ? slides : slides.filter((r) => r.domain === state.selectedDomain);
   }
   async function refreshDrafts() { state.drafts = await api("/api/drafts"); }
+  async function refreshRenderers() { state.renderers = await api("/api/renderers"); }
   async function refreshSources() { state.sources = await api("/api/sources"); }
   async function loadDeck(id) {
     state.currentDeck = await api(`/api/decks/${id}`);
@@ -152,6 +156,9 @@
           sourcesPollHandle = null;
           await refreshDomains();
           await refreshDecks();
+          // An engine may have been switched off during the run (e.g. macOS blocked PowerPoint).
+          await refreshRenderers().catch(() => {});
+          render();
         }
       }, 1500);
     }
@@ -343,6 +350,7 @@
     app.innerHTML = html
       + (withDecks ? `<datalist id="categoryOptions">${categoriesOf().map((c) => `<option value="${esc(c)}">`).join("")}</datalist>` : "")
       + (withDecks && state.showDrafts ? renderDraftsModal() : "")
+      + (rendererPopupVisible() ? renderRendererModal() : "")
       + renderToast();
     attachHandlers();
     if (pendingFocus) {
@@ -486,6 +494,7 @@
         </div>
       </div>
       <div class="main">
+        ${renderRendererBanner()}
         <div class="top-row">
           <div class="search-wrap" style="flex-grow:1;max-width:420px;">
             ${ICON.search.replace("<svg", '<svg class="search-icon"')}
@@ -625,6 +634,107 @@
         ${totalSlides ? `<div class="panel-hint">Drag to reorder or move between chapters · Alt + arrow keys on a focused slide</div>` : ""}
       </div>
     </aside>`;
+  }
+
+  // ---- slide renderer (PowerPoint / LibreOffice) status ------------------------------------
+  const rendererMissing = () => !!state.renderers && !state.renderers.active;
+  const rendererPopupVisible = () => rendererMissing() && !state.dismissRendererHelp && !state.showDrafts;
+  const engineById = (id) => (state.renderers ? state.renderers.engines.find((e) => e.id === id) : null);
+
+  // An installed engine that had to be switched off, while another one still works.
+  function skippedEngineNotice() {
+    const r = state.renderers;
+    if (!r || !r.active) return null;
+    return r.engines.find((e) => e.installed && e.problem) || null;
+  }
+
+  function renderRendererBanner() {
+    if (rendererMissing() && state.dismissRendererHelp) {
+      return `<div class="banner warn" role="alert">
+        <div><strong>No slide renderer found.</strong> Decks are indexed without thumbnails and image-based export is unavailable until PowerPoint or LibreOffice is installed.</div>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="showRendererHelp">What to install</button>
+      </div>`;
+    }
+    const skipped = skippedEngineNotice();
+    if (skipped) {
+      const using = engineById(state.renderers.active);
+      return `<div class="banner info" role="status">
+        <div><strong>${esc(skipped.label)} can't be used:</strong> ${esc(skipped.problem)} Using ${esc(using.label)} instead.</div>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="recheckRenderers" ${state.recheckingRenderers ? "disabled" : ""}>Check again</button>
+      </div>`;
+    }
+    return "";
+  }
+
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); showToast("Copied to clipboard."); }
+    catch (e) { showToast("Couldn't copy — select the text and copy it manually.", "error"); }
+  }
+
+  async function recheckRenderers() {
+    state.recheckingRenderers = true;
+    render();
+    try {
+      state.renderers = await api("/api/renderers/recheck", { method: "POST" });
+    } catch (err) {
+      state.recheckingRenderers = false;
+      showToast(String(err.message || err), "error");
+      return;
+    }
+    state.recheckingRenderers = false;
+    if (state.renderers.active) {
+      const label = engineById(state.renderers.active).label;
+      // Decks indexed while nothing could render only need their thumbnails — re-index picks exactly those up.
+      for (const s of state.sources) await api(`/api/sources/${s.id}/reindex`, { method: "POST" }).catch(() => {});
+      await refreshSources().catch(() => {});
+      ensureSourcesPolling();
+      showToast(`Found ${label}${state.sources.length ? " — generating thumbnails for your decks…" : "."}`);
+    } else {
+      showToast("Still no usable slide renderer found.", "error");
+    }
+  }
+
+  function renderRendererModal() {
+    const r = state.renderers;
+    const pp = engineById("powerpoint");
+    const lo = engineById("libreoffice");
+    const blocked = r.engines.some((e) => e.installed && e.problem);
+    const cmd = { mac: "brew install --cask libreoffice", windows: "winget install TheDocumentFoundation.LibreOffice", linux: "sudo apt install libreoffice" }[r.platform];
+    const chip = (e) => !e ? "" : e.usable ? `<span class="chip green">Ready</span>`
+      : e.installed ? `<span class="chip amber">Installed, can't be used</span>` : `<span class="chip red">Not installed</span>`;
+
+    const ppRow = pp ? `<div class="renderer-row">
+        <div class="renderer-head"><strong>Microsoft PowerPoint</strong> <span class="tag">first choice</span> ${chip(pp)}</div>
+        <p>Draws slides exactly as PowerPoint shows them. Needs a Microsoft 365 / Office licence.
+          <a href="https://www.microsoft.com/microsoft-365/powerpoint" target="_blank" rel="noopener noreferrer">Get PowerPoint</a></p>
+        ${pp.problem ? `<p class="renderer-problem">${esc(pp.problem)}</p>` : ""}
+        ${r.platform === "mac" ? `<p class="renderer-note">The first time, macOS asks whether Slide Library may control PowerPoint — click <strong>OK</strong> (or enable it later under System Settings → Privacy &amp; Security → Automation).</p>` : ""}
+      </div>` : "";
+    const loRow = `<div class="renderer-row">
+        <div class="renderer-head"><strong>LibreOffice</strong> <span class="tag">free fallback</span> ${chip(lo)}</div>
+        <p>Free and open source. <a href="https://www.libreoffice.org/download/download-libreoffice/" target="_blank" rel="noopener noreferrer">Download LibreOffice</a>${cmd ? " or install it from a terminal:" : ""}</p>
+        ${cmd ? `<div class="cmd"><code>${esc(cmd)}</code><button type="button" class="btn btn-secondary btn-sm" data-action="copyText" data-text="${esc(cmd)}">Copy</button></div>` : ""}
+        ${lo && lo.problem ? `<p class="renderer-problem">${esc(lo.problem)}</p>` : ""}
+      </div>`;
+
+    return `<div class="modal-backdrop" data-action="dismissRendererHelp">
+      <div class="modal renderer-modal" role="alertdialog" aria-modal="true" aria-labelledby="rendererTitle" aria-describedby="rendererIntro" tabindex="-1">
+        <div class="modal-head"><h2 id="rendererTitle">${blocked ? "The slide renderer can't be used" : "No slide renderer found"}</h2>
+          <button type="button" class="icon-btn sm" data-action="dismissRendererHelp" aria-label="Close">${ICON.x}</button></div>
+        <div class="modal-body renderer-body">
+          <p id="rendererIntro">Slide Library needs <strong>Microsoft PowerPoint</strong> (preferred) or <strong>LibreOffice</strong> to draw
+            slide thumbnails and to export slides that can't be copied as editable ones (charts, SmartArt, PDF pages).
+            ${blocked ? "One is installed but blocked — see below." : "Neither was found on this computer."}
+            Install one of them, then check again.</p>
+          ${ppRow}${loRow}
+          <p class="renderer-note">Until then you can still browse, search slide text and export editable slides — but there are no thumbnails.</p>
+        </div>
+        <div class="modal-foot">
+          <button type="button" class="btn btn-secondary" data-action="dismissRendererHelp">Continue without thumbnails</button>
+          <button type="button" class="btn btn-primary" data-action="recheckRenderers" ${state.recheckingRenderers ? "disabled" : ""}>${state.recheckingRenderers ? "Checking…" : "Check again"}</button>
+        </div>
+      </div>
+    </div>`;
   }
 
   const draftFilterKey = (d) => (d.category ? "cat:" + d.category : "none");
@@ -1004,6 +1114,14 @@
 
     if (action === "exportDeck") return doExport();
     if (action === "openFile") return openFile(Number(el.dataset.id));
+    if (action === "recheckRenderers") return recheckRenderers();
+    if (action === "showRendererHelp") { state.dismissRendererHelp = false; return render(); }
+    if (action === "dismissRendererHelp") {
+      if (e.target !== el && el.classList.contains("modal-backdrop")) return; // click landed inside the dialog
+      state.dismissRendererHelp = true;
+      return render();
+    }
+    if (action === "copyText") return copyText(el.dataset.text);
     if (action === "togglePanel") return togglePanel();
     if (action === "zoomIn") return setZoom(ViewModel.stepZoom(state.zoom, 1));
     if (action === "zoomOut") return setZoom(ViewModel.stepZoom(state.zoom, -1));
@@ -1103,6 +1221,7 @@
       saveDraftMeta();
       return;
     }
+    if (e.key === "Escape" && rendererPopupVisible()) { state.dismissRendererHelp = true; render(); return; }
     if (e.key === "Escape" && state.showDrafts) {
       if (state.editingDraft) state.editingDraft = null; else state.showDrafts = false;
       render();
@@ -1292,7 +1411,8 @@
     applyLayout();
     document.getElementById("app").innerHTML = `<div style="padding:40px;color:var(--text-secondary);">Loading your library…</div>`;
     try {
-      await Promise.all([refreshDomains(), refreshDecks(), refreshSources(), refreshDrafts().catch(() => {})]);
+      await Promise.all([refreshDomains(), refreshDecks(), refreshSources(), refreshDrafts().catch(() => {}),
+        refreshRenderers().catch(() => {})]);
     } catch (err) {
       document.getElementById("app").innerHTML = `<div style="padding:40px;color:var(--red-text);">Could not reach the server: ${esc(String(err.message || err))}</div>`;
       return;

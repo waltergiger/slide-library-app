@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, drafts, exporter, file_opener, folder_picker, indexer
+from . import db, drafts, exporter, file_opener, folder_picker, indexer, renderers
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -59,6 +59,20 @@ async def _validate_host_and_origin(request: Request, call_next):
         if origin and _hostname(urlsplit(origin).netloc) not in ALLOWED_HOSTS:
             return JSONResponse({"detail": "Cross-origin request blocked"}, status_code=403)
     return await call_next(request)
+
+
+@app.get("/api/renderers")
+def api_renderers():
+    """Which slide renderers (PowerPoint, LibreOffice) exist on this machine and which is in use."""
+    return renderers.status()
+
+
+@app.post("/api/renderers/recheck")
+def api_renderers_recheck():
+    """Re-detect after the user installed something or fixed a permission; also re-enables engines
+    that were switched off after failing."""
+    renderers.reset()
+    return renderers.status()
 
 
 # ---------------------------------------------------------------- sources --

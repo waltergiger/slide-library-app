@@ -325,6 +325,14 @@ def unchanged(path: str, mtime: float, size: int) -> bool:
     return bool(row and abs(row["mtime"] - mtime) < 1 and row["size"] == size)
 
 
+def has_missing_thumbnails(path: str) -> bool:
+    return get_conn().execute(
+        """SELECT 1 FROM slides JOIN files ON files.id = slides.file_id
+           WHERE files.path = ? AND slides.thumb_file IS NULL LIMIT 1""",
+        (path,),
+    ).fetchone() is not None
+
+
 def list_domains() -> list[dict]:
     conn = get_conn()
     rows = conn.execute(

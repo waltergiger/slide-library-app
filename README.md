@@ -14,30 +14,46 @@ index (a SQLite database) and slide thumbnails live in `data/`.
 
 ## 1. Install
 
-You need Python 3.10+ and LibreOffice (free) — LibreOffice is what actually
-renders slide thumbnails and re-lays-out a PowerPoint file so its pages can
-be rasterized; there's no way to draw a slide's real layout, or copy one
-slide's exact formatting into another deck, without an engine that
-understands the format.
+You need Python 3.10+ and **one slide renderer**: Microsoft PowerPoint
+(preferred) or LibreOffice (free). A renderer is what draws the slide
+thumbnails and the image-based slides in exports (PDF pages, and slides with
+charts/SmartArt); there's no way to draw a slide's real layout without an
+engine that understands the format.
 
-**macOS**
-```
-brew install --cask libreoffice
-```
-(or download from libreoffice.org — either way, this installs the `soffice`
-command the app calls)
+The app checks what is installed and picks automatically:
 
-**Windows**
-Download and install LibreOffice from https://www.libreoffice.org/download/ .
-Make sure the installer adds it to your PATH, or note the install folder
-(typically `C:\Program Files\LibreOffice\program`) — if `soffice` isn't on
-your PATH, add that folder to it.
+1. **Microsoft PowerPoint** — on macOS (via AppleScript) and Windows (via COM),
+   no extra software needed. First choice: slides come out exactly as
+   PowerPoint draws them.
+2. **LibreOffice** — the fallback, and the only option on Linux.
+3. **Neither** — the app still starts, indexes and searches slide text, and
+   exports editable slides; a popup explains what to install, and thumbnails
+   appear once you install one and click **Check again** (it re-indexes only
+   the decks that lack thumbnails).
 
-**Linux**
 ```
-sudo apt install libreoffice        # Debian/Ubuntu
-sudo dnf install libreoffice        # Fedora
+brew install --cask libreoffice          # macOS
+winget install TheDocumentFoundation.LibreOffice   # Windows (or libreoffice.org)
+sudo apt install libreoffice             # Debian/Ubuntu
 ```
+
+Notes on PowerPoint:
+- **macOS** asks once whether the app that runs Slide Library (e.g. Terminal)
+  may control PowerPoint — click OK, or enable it later under System Settings →
+  Privacy & Security → Automation. If it is blocked, LibreOffice is used
+  instead and a notice explains why.
+- PowerPoint opens and closes briefly while indexing (macOS can't run it
+  headless). If PowerPoint is already running, your own presentations are left
+  alone — only a private *copy* of each deck is opened, so originals are never
+  modified or locked.
+- Password-protected decks and macro prompts can block a conversion; it times
+  out after 3 minutes and that deck simply gets no thumbnails.
+- `SLIDELIB_ENGINE=powerpoint|libreoffice` forces one engine (default `auto`);
+  `SLIDELIB_SOFFICE` points at a `soffice` executable in an unusual location
+  (LibreOffice is also found in its standard install folders, not just PATH).
+- Hidden slides are included so that slide *N* always matches thumbnail *N*.
+  A renderer that returns the wrong number of pages is rejected (next engine
+  is tried) rather than showing the wrong slide's picture.
 
 Then, from this folder:
 ```
@@ -203,7 +219,7 @@ pip install -r requirements-dev.txt
 python -m pytest                    # backend
 node --test tests/js/*.test.js      # deck-panel reorder logic (Node 18+, no npm install)
 ```
-Tests use throwaway databases and never touch `data/`; LibreOffice is stubbed
+Tests use throwaway databases and never touch `data/`; the renderers are stubbed
 so they run without it.
 
 ## Project layout
@@ -213,6 +229,7 @@ app/            FastAPI backend
   main.py         API routes + serves the frontend
   db.py           SQLite schema and queries (data/library.db)
   indexer.py      Walks folders, extracts text, renders thumbnails
+  renderers/      PowerPoint (macOS/Windows) + LibreOffice engines, selection and fallback
   pptx_copy.py    Low-level native slide copy (OOXML)
   exporter.py     Builds the exported .pptx from chapters
   drafts.py       Resolves saved Builder decks against the live index

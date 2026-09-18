@@ -46,7 +46,7 @@ def library(tmp_db, tmp_path, monkeypatch):
     # soffice stand-in: a real PDF with one page per source slide
     calls = []
 
-    def fake_convert(path, out_dir):
+    def fake_convert(path, out_dir, expected_pages=None):
         calls.append(str(path))
         out = out_dir / (Path(path).stem + ".pdf")
         _make_pdf(out, pages=3)
