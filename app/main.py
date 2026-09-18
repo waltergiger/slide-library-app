@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, indexer, exporter
+from . import db, exporter, folder_picker, indexer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -123,43 +123,19 @@ _browse_lock = threading.Lock()
 
 @app.post("/api/browse-folder")
 def api_browse_folder():
-    """Opens a native OS folder-picker dialog and returns the chosen path.
-
-    This app and its browser tab run on the same machine, so this is safe
-    and normal for a local, single-user tool — it's the same trick behind
-    every desktop app's "Choose Folder..." button, just triggered from the
-    browser instead of a native window. Defined as a plain `def` (not
-    `async def`) so FastAPI runs it in a worker thread and the dialog
-    doesn't block the rest of the app while it's open.
-    """
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            400,
-            "Folder browsing needs Python's tkinter, which isn't installed here "
-            "(common on Linux: `sudo apt install python3-tk`, then restart the app). "
-            "You can still type or paste the folder path directly.",
-        ) from exc
-
+    """Opens a native OS folder-picker dialog and returns the chosen path
+    (null if cancelled). The dialog runs in a child process — see
+    folder_picker for why it must not run inside this server process."""
     with _browse_lock:  # one native dialog at a time
         try:
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes("-topmost", True)
-            try:
-                path = filedialog.askdirectory(title="Choose a slide library folder", mustexist=True)
-            finally:
-                root.destroy()
-        except Exception as exc:  # noqa: BLE001
+            path = folder_picker.pick_folder()
+        except folder_picker.PickerUnavailable as exc:
             raise HTTPException(
                 400,
                 f"Couldn't open a folder picker on this machine ({exc}). "
                 "Type or paste the folder path directly instead.",
             ) from exc
-
-    return {"path": path or None}
+    return {"path": path}
 
 
 # ----------------------------------------------------------------- domains --

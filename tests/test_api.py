@@ -55,3 +55,23 @@ def test_export_with_empty_chapter_returns_valid_pptx(client):
     assert r.status_code == 200
     assert 'filename="Out.pptx"' in r.headers["content-disposition"]
     assert r.content[:2] == b"PK"
+
+
+def test_browse_folder_returns_path_or_null_on_cancel(client, monkeypatch):
+    from app import folder_picker
+
+    monkeypatch.setattr(folder_picker, "pick_folder", lambda: "/Users/x/Slides")
+    assert client.post("/api/browse-folder").json() == {"path": "/Users/x/Slides"}
+    monkeypatch.setattr(folder_picker, "pick_folder", lambda: None)
+    assert client.post("/api/browse-folder").json() == {"path": None}
+
+
+def test_browse_folder_reports_unavailable_picker_as_400(client, monkeypatch):
+    from app import folder_picker
+
+    def boom():
+        raise folder_picker.PickerUnavailable("no display")
+
+    monkeypatch.setattr(folder_picker, "pick_folder", boom)
+    r = client.post("/api/browse-folder")
+    assert r.status_code == 400 and "type or paste" in r.json()["detail"].lower()
