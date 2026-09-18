@@ -79,6 +79,18 @@ a deck to see its slides, then drag slides (from a deck, from search hits
 or from your favorites) straight into the **deck panel** on the right, and
 **Export .pptx** when the deck is ready.
 
+### Opening the original file
+
+Every deck card, and the header of an open deck, shows the file's **full path
+and filename** as a link. Click it (or **Open in PowerPoint** / **Open PDF** in
+the deck view) to open the file in your default application — PowerPoint for
+`.pptx`, your PDF viewer for `.pdf`. Browsers refuse to follow `file://` links
+from a web page, so the click is sent to the local server, which launches the
+file (macOS `open`, Windows `os.startfile`, Linux `xdg-open`). It only ever
+opens a file that is in the index, by id, and only supported slide file types;
+if the file was moved or deleted you get a message to re-index. The link's
+address is also a proper `file://` URL, so "Copy link address" works.
+
 ### Favorites
 
 Click the star on any slide — in a deck, in search hits or in the favorites
@@ -205,6 +217,7 @@ app/            FastAPI backend
   exporter.py     Builds the exported .pptx from chapters
   drafts.py       Resolves saved Builder decks against the live index
   folder_picker.py  Native folder dialog, run out-of-process
+  file_opener.py    Opens an indexed file in the default desktop app
 tests/          pytest suite (db, pptx copy, exporter, API, drafts) + tests/js
 static/         Frontend (no build step — plain HTML/CSS/JS)
   builder-model.js  Pure chapter/slide reorder logic (unit-tested)

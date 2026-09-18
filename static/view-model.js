@@ -45,7 +45,19 @@
     return Math.round(Math.max(PANEL.min, Math.min(maxPanelWidth(viewportWidth), n)));
   }
 
-  const api = { ZOOM_STEPS, DEFAULT_ZOOM, PANEL, normalizeZoom, stepZoom, maxPanelWidth, clampPanelWidth };
+  /** file:// URL for a local path, so "copy link address" gives something valid.
+   *  Handles POSIX, Windows drive and UNC paths; every segment is percent-encoded
+   *  (spaces, #, ?, %, non-ASCII) so the name can't be mistaken for URL syntax. */
+  function fileUrl(path) {
+    const p = String(path == null ? "" : path);
+    const encode = (s) => s.split("/").map(encodeURIComponent).join("/");
+    const drive = /^([A-Za-z]:)[\\/](.*)$/.exec(p);
+    if (drive) return "file:///" + drive[1] + "/" + encode(drive[2].replace(/\\/g, "/"));
+    if (p.startsWith("\\\\")) return "file://" + encode(p.slice(2).replace(/\\/g, "/")); // \\server\share\x -> file://server/share/x
+    return "file://" + (p.startsWith("/") ? "" : "/") + encode(p);
+  }
+
+  const api = { fileUrl, ZOOM_STEPS, DEFAULT_ZOOM, PANEL, normalizeZoom, stepZoom, maxPanelWidth, clampPanelWidth };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ViewModel = api;
 })(typeof self !== "undefined" ? self : this);

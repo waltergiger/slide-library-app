@@ -55,3 +55,22 @@ test("empty string and null are treated as 'nothing stored'", () => {
   assert.equal(V.clampPanelWidth(null, 1600), 400);
   assert.equal(V.clampPanelWidth("", 1600), 400);
 });
+
+test("fileUrl: POSIX paths keep separators and encode everything else", () => {
+  assert.equal(V.fileUrl("/Users/wgi/Decks/Plan.pptx"), "file:///Users/wgi/Decks/Plan.pptx");
+  assert.equal(V.fileUrl("/Users/wgi/My Decks/Q3 #2 (final) 100%.pptx"), "file:///Users/wgi/My%20Decks/Q3%20%232%20(final)%20100%25.pptx");
+  assert.equal(V.fileUrl("/Volumes/Share/Projekt Atlas – Kickoff.pptx"), "file:///Volumes/Share/Projekt%20Atlas%20%E2%80%93%20Kickoff.pptx");
+  assert.equal(V.fileUrl("/a/b?c=1.pdf"), "file:///a/b%3Fc%3D1.pdf"); // ? must not start a query string
+});
+
+test("fileUrl: Windows drive and UNC paths", () => {
+  assert.equal(V.fileUrl("C:\\Decks\\My Deck.pptx"), "file:///C:/Decks/My%20Deck.pptx");
+  assert.equal(V.fileUrl("d:/x/y.pdf"), "file:///d:/x/y.pdf");
+  assert.equal(V.fileUrl("\\\\fileserver\\Architecture\\v3.pptx"), "file://fileserver/Architecture/v3.pptx");
+});
+
+test("fileUrl tolerates empty and relative input", () => {
+  assert.equal(V.fileUrl(""), "file:///");
+  assert.equal(V.fileUrl(null), "file:///");
+  assert.equal(V.fileUrl("rel/a b.pdf"), "file:///rel/a%20b.pdf");
+});

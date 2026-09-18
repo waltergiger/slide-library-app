@@ -9,6 +9,7 @@
   const ICON = {
     search: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>`,
     minus: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>`,
+    external: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3h7v7M21 3l-9 9M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>`,
     plus: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>`,
     chevronLeft: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>`,
     arrowRight: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`,
@@ -237,6 +238,26 @@
     showToast._t = setTimeout(() => { state.toast = null; render(); }, 6000);
   }
 
+  const appNameFor = (ext) => (ext === "pdf" ? "your PDF viewer" : "PowerPoint");
+
+  // Full path + filename as a real link. The browser can't follow file:// from an
+  // http page, so the click is intercepted and the local server opens the file.
+  function fileLink(d) {
+    const breakable = esc(d.path).replace(/([\/\\])/g, "$1<wbr>"); // let long paths wrap at separators
+    return `<a href="${esc(ViewModel.fileUrl(d.path))}" class="file-link" data-action="openFile" data-id="${d.id}"
+      title="Open in ${appNameFor(d.ext)}: ${esc(d.path)}" aria-label="Open ${esc(d.path)} in ${appNameFor(d.ext)}">${ICON.external}<span>${breakable}</span></a>`;
+  }
+
+  async function openFile(id) {
+    try {
+      const { path } = await api(`/api/decks/${id}/open`, { method: "POST" });
+      const name = path.split(/[\\/]/).pop();
+      showToast(`Opening ${name} in ${appNameFor(name.toLowerCase().endsWith(".pdf") ? "pdf" : "pptx")}…`);
+    } catch (err) {
+      showToast(String(err.message || err), "error");
+    }
+  }
+
   function badgeFor(ext) { return ext === "pdf" ? { cls: "pdf", label: "PDF" } : { cls: "pptx", label: "PPT" }; }
 
   function findOrCreateChapter(name) {
@@ -371,14 +392,15 @@
 
     const decksHtml = visibleDecks.map((d) => {
       const b = badgeFor(d.ext);
-      return `<a href="#" class="deck-card" data-action="openDeck" data-id="${d.id}">
+      return `<div class="deck-card" data-action="openDeck" data-id="${d.id}" role="link" tabindex="0" aria-label="Open deck ${esc(d.title)}">
         <div class="deck-card-top">
           <div class="badge ${b.cls}">${b.label}</div>
           <span class="tag">${esc(d.domain)}</span>
         </div>
         <div class="deck-title">${esc(d.title)}</div>
         <div class="deck-meta">${d.slide_count} slides</div>
-      </a>`;
+        ${fileLink(d)}
+      </div>`;
     }).join("");
 
     const emptyMessage = noTypeSelected
@@ -516,11 +538,13 @@
               <div>
                 <h1 style="margin:0 0 4px;font-size:21px;font-weight:700;">${esc(deck.title)}</h1>
                 <div style="font-size:13px;color:var(--text-secondary);">${deck.slide_count} slides · ${deck.ext.toUpperCase()} · ${esc(deck.domain)}</div>
+                <div style="margin-top:6px;">${fileLink(deck)}</div>
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;">
               ${zoomControl()}
               ${themeToggleButton()}
+              <button type="button" class="btn btn-secondary" data-action="openFile" data-id="${deck.id}">${ICON.external} Open ${deck.ext === "pdf" ? "PDF" : "in PowerPoint"}</button>
               <button type="button" class="btn btn-secondary" data-action="addAllToBuilder">Add all ${deck.slide_count} to deck</button>
               ${panelToggleButton()}
             </div>
@@ -979,6 +1003,7 @@
     }
 
     if (action === "exportDeck") return doExport();
+    if (action === "openFile") return openFile(Number(el.dataset.id));
     if (action === "togglePanel") return togglePanel();
     if (action === "zoomIn") return setZoom(ViewModel.stepZoom(state.zoom, 1));
     if (action === "zoomOut") return setZoom(ViewModel.stepZoom(state.zoom, -1));
@@ -1055,6 +1080,13 @@
   }
 
   document.addEventListener("keydown", (e) => {
+    const t = e.target;
+    if ((e.key === "Enter" || e.key === " ") && t.matches && t.matches('[role="link"][data-action], [role="button"][data-action]')
+        && t.tagName !== "BUTTON" && t.tagName !== "A") {
+      e.preventDefault();
+      t.click();
+      return;
+    }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && state.view !== "sources") {
       e.preventDefault();
       saveDraft();

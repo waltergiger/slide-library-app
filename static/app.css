@@ -17,6 +17,7 @@
   --amber-bg: #F5ECDA; --amber-text: #8A6D3A;
   --red-bg: #F6E7E4; --red-text: #9C4632;
   --drop-indicator: #4C82F0;
+  --link: #2F5FC4;
   --pptx-badge: #D2632B;
   --pdf-badge: #B33F34;
   --shadow: 0 10px 28px rgba(33,32,28,0.28);
@@ -39,6 +40,7 @@
   --amber-bg: #372C18; --amber-text: #D9AD65;
   --red-bg: #38241F; --red-text: #E4917B;
   --shadow: 0 10px 28px rgba(0,0,0,0.45);
+  --link: #8AB0FF;
 }
 
 * { box-sizing: border-box; }
@@ -130,6 +132,13 @@ input, select { font-family: inherit; }
 .deck-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(max(150px, calc(240px * var(--zoom, 1))), 1fr)); gap: 18px; overflow-y: auto; }
 .deck-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; background: var(--surface);
   border: 1px solid var(--border); border-radius: 14px; }
+.deck-card { cursor: pointer; transition: border-color 0.12s ease; }
+.deck-card:hover { border-color: var(--border-strong); }
+.deck-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.file-link { display: flex; align-items: flex-start; gap: 6px; font-size: 11.5px; line-height: 1.4; color: var(--link);
+  overflow-wrap: anywhere; margin-top: auto; }
+.file-link svg { flex-shrink: 0; margin-top: 3px; }
+.file-link:hover { text-decoration: underline; opacity: 1; }
 .deck-card-top { display: flex; align-items: center; justify-content: space-between; }
 .badge { width: 32px; height: 32px; border-radius: 8px; color: #fff; display: flex; align-items: center; justify-content: center;
   font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em; }

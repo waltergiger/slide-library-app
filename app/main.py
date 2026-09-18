@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, drafts, exporter, folder_picker, indexer
+from . import db, drafts, exporter, file_opener, folder_picker, indexer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -182,6 +182,31 @@ def api_get_deck(file_id: int):
             for s in slides
         ],
     }
+
+
+@app.post("/api/decks/{file_id}/open")
+def api_open_deck_file(file_id: int):
+    """Opens the deck's source file in the default desktop application.
+
+    Security: the file is looked up by its index id — a client-supplied path is
+    never accepted — and must still be a supported slide file; the Host/Origin
+    middleware keeps other websites from triggering it. Only a user click in
+    this app reaches here, and macro-enabled files still hit PowerPoint's own
+    protected-view prompt.
+    """
+    row = db.get_file(file_id)
+    if row is None:
+        raise HTTPException(404, "deck not found")
+    path = Path(row["path"])
+    if not path.is_absolute() or path.suffix.lower() not in indexer.SUPPORTED_EXTS:
+        raise HTTPException(400, "not an indexed slide file")
+    if not path.is_file():
+        raise HTTPException(404, f"File not found on disk: {path} — it was moved or deleted; re-index the source.")
+    try:
+        file_opener.open_file(str(path))
+    except file_opener.OpenFailed as exc:
+        raise HTTPException(500, f"Couldn't open {path.name}: {exc}") from exc
+    return {"ok": True, "path": str(path)}
 
 
 # --------------------------------------------------------------- favorites --
