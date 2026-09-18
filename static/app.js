@@ -8,6 +8,7 @@
   // ---------------------------------------------------------------- icons --
   const ICON = {
     search: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.35-4.35"/></svg>`,
+    minus: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg>`,
     plus: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>`,
     chevronLeft: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>`,
     arrowRight: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`,
@@ -34,6 +35,11 @@
   const BUILDER_KEY = "slidelib-builder";
   const THEME_KEY = "slidelib-theme";
   const PANEL_KEY = "slidelib-panel";
+  const ZOOM_KEY = "slidelib-zoom";
+  const PANEL_W_KEY = "slidelib-panel-width";
+
+  const readPref = (key) => { try { return localStorage.getItem(key); } catch (e) { return null; } };
+  const writePref = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (e) { /* per-viewer convenience only */ } };
 
   // The Builder is auto-kept in localStorage as a working copy (survives a
   // reload); "Save" additionally stores it server-side as a named deck that
@@ -75,7 +81,9 @@
     browsing: false,
     builder: loadBuilder(),
     slideResults: [],
-    panelOpen: (() => { try { return localStorage.getItem(PANEL_KEY) !== "closed"; } catch (e) { return true; } })(),
+    panelOpen: readPref(PANEL_KEY) !== "closed",
+    zoom: ViewModel.normalizeZoom(readPref(ZOOM_KEY)),
+    panelWidth: ViewModel.clampPanelWidth(readPref(PANEL_W_KEY), window.innerWidth),
     dragging: null,
     dropTarget: null,
     showDrafts: false,
@@ -152,6 +160,68 @@
   function applyTheme() {
     document.body.setAttribute("data-theme", state.theme);
   }
+
+  // The preferred panel width is kept as chosen; what is applied is clamped to
+  // the current window, so shrinking the window never permanently shrinks the preference.
+  const effectivePanelWidth = () => ViewModel.clampPanelWidth(state.panelWidth, window.innerWidth);
+
+  function applyLayout() {
+    const root = document.documentElement.style;
+    root.setProperty("--zoom", String(state.zoom / 100));
+    root.setProperty("--panel-w", effectivePanelWidth() + "px");
+  }
+
+  function setZoom(next) {
+    state.zoom = next;
+    writePref(ZOOM_KEY, next);
+    render();
+  }
+
+  function zoomControl() {
+    const atMin = state.zoom === ViewModel.ZOOM_STEPS[0];
+    const atMax = state.zoom === ViewModel.ZOOM_STEPS[ViewModel.ZOOM_STEPS.length - 1];
+    return `<div class="zoom-control" role="group" aria-label="Zoom slides">
+      <button type="button" class="zoom-btn" data-action="zoomOut" aria-label="Zoom out" title="Zoom out" ${atMin ? "disabled" : ""}>${ICON.minus}</button>
+      <button type="button" class="zoom-value" data-action="zoomReset" aria-label="Zoom ${state.zoom}%, click to reset to 100%" title="Reset to 100%">${state.zoom}%</button>
+      <button type="button" class="zoom-btn" data-action="zoomIn" aria-label="Zoom in" title="Zoom in" ${atMax ? "disabled" : ""}>${ICON.plus}</button>
+    </div>`;
+  }
+
+  // ---- panel splitter: drag with the mouse, arrow keys when focused, double-click resets.
+  // Listeners live on `document` (not the handle) because render() replaces the handle element.
+  let resizing = null;
+
+  function setPanelWidth(width, persist) {
+    state.panelWidth = ViewModel.clampPanelWidth(width, window.innerWidth);
+    applyLayout();
+    document.querySelectorAll("[data-resizer]").forEach((h) => h.setAttribute("aria-valuenow", String(effectivePanelWidth())));
+    if (persist) writePref(PANEL_W_KEY, state.panelWidth);
+  }
+
+  document.addEventListener("pointerdown", (e) => {
+    const handle = e.target.closest && e.target.closest("[data-resizer]");
+    if (!handle || e.button > 0) return;
+    e.preventDefault();
+    resizing = { startX: e.clientX, startWidth: effectivePanelWidth() };
+    document.body.classList.add("resizing");
+    handle.classList.add("active");
+  });
+  document.addEventListener("pointermove", (e) => {
+    if (resizing) setPanelWidth(resizing.startWidth + (resizing.startX - e.clientX), false); // panel is on the right: dragging left widens it
+  });
+  const endResize = () => {
+    if (!resizing) return;
+    resizing = null;
+    document.body.classList.remove("resizing");
+    document.querySelectorAll("[data-resizer].active").forEach((h) => h.classList.remove("active"));
+    writePref(PANEL_W_KEY, state.panelWidth);
+  };
+  document.addEventListener("pointerup", endResize);
+  document.addEventListener("pointercancel", endResize);
+  document.addEventListener("dblclick", (e) => {
+    if (e.target.closest && e.target.closest("[data-resizer]")) setPanelWidth(ViewModel.PANEL.def, true);
+  });
+  window.addEventListener("resize", applyLayout);
   function toggleTheme() {
     state.theme = state.theme === "dark" ? "light" : "dark";
     try { localStorage.setItem(THEME_KEY, state.theme); } catch (e) { /* ignore */ }
@@ -241,6 +311,7 @@
   // -------------------------------------------------------------- render --
   function render() {
     applyTheme();
+    applyLayout();
     const app = document.getElementById("app");
     if (state.view === "deck" && !state.currentDeck) { app.innerHTML = `<div style="padding:40px">Loading…</div>`; return; }
     let html;
@@ -400,6 +471,7 @@
             <input id="librarySearch" class="input" type="text" placeholder="Search decks, slides, or text inside slides…" value="${esc(state.query)}" data-bind="query">
           </div>
           <div class="actions">
+            ${zoomControl()}
             ${themeToggleButton()}
             ${panelToggleButton()}
           </div>
@@ -447,6 +519,7 @@
               </div>
             </div>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;">
+              ${zoomControl()}
               ${themeToggleButton()}
               <button type="button" class="btn btn-secondary" data-action="addAllToBuilder">Add all ${deck.slide_count} to deck</button>
               ${panelToggleButton()}
@@ -492,7 +565,11 @@
       </div>`;
     }).join("");
 
+    const vw = window.innerWidth;
     return `<aside class="deck-panel" aria-label="New deck">
+      <div class="panel-resizer" data-resizer role="separator" aria-orientation="vertical" tabindex="0"
+           aria-label="Resize deck panel (drag, or use arrow keys; double-click to reset)"
+           aria-valuemin="${ViewModel.PANEL.min}" aria-valuemax="${ViewModel.maxPanelWidth(vw)}" aria-valuenow="${effectivePanelWidth()}"></div>
       <div class="deck-panel-head">
         <div class="panel-title-row">
           <span class="nav-label" style="padding:0;">New deck</span>
@@ -903,6 +980,9 @@
 
     if (action === "exportDeck") return doExport();
     if (action === "togglePanel") return togglePanel();
+    if (action === "zoomIn") return setZoom(ViewModel.stepZoom(state.zoom, 1));
+    if (action === "zoomOut") return setZoom(ViewModel.stepZoom(state.zoom, -1));
+    if (action === "zoomReset") return setZoom(ViewModel.DEFAULT_ZOOM);
     if (action === "saveDraft") return saveDraft();
     if (action === "filterDrafts") { state.draftFilter = el.dataset.value; return render(); }
     if (action === "editDraft") return editDraft(Number(el.dataset.id));
@@ -978,6 +1058,12 @@
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && state.view !== "sources") {
       e.preventDefault();
       saveDraft();
+      return;
+    }
+    if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && e.target.closest && e.target.closest("[data-resizer]")) {
+      e.preventDefault();
+      const step = e.shiftKey ? 96 : 24;
+      setPanelWidth(effectivePanelWidth() + (e.key === "ArrowLeft" ? step : -step), true);
       return;
     }
     if (e.key === "Enter" && state.editingDraft && e.target.closest && e.target.closest(".draft-row.editing")) {
@@ -1171,6 +1257,7 @@
   // -------------------------------------------------------------- startup --
   (async function init() {
     applyTheme();
+    applyLayout();
     document.getElementById("app").innerHTML = `<div style="padding:40px;color:var(--text-secondary);">Loading your library…</div>`;
     try {
       await Promise.all([refreshDomains(), refreshDecks(), refreshSources(), refreshDrafts().catch(() => {})]);

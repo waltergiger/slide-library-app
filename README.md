@@ -109,6 +109,16 @@ browser; close the terminal (or Ctrl+C) to stop it. Your index and
 thumbnails persist in `data/` between runs — nothing needs reindexing
 unless the files themselves changed.
 
+## Zoom and layout
+
+The **− 100% +** control in the top bar scales the thumbnails and cards in the
+library and deck views (50–200%, in steps); click the percentage to reset to
+100%. The **divider** between the library and the deck panel can be dragged
+with the mouse (or focused and moved with ← / →, Shift for larger steps;
+double-click resets it to the default width). Both settings are remembered in
+your browser, and the panel width is limited so the library always keeps a
+usable area.
+
 ## Building and saving decks
 
 The **deck panel** on the right of the library (toggle it with **New deck** /
@@ -198,6 +208,7 @@ app/            FastAPI backend
 tests/          pytest suite (db, pptx copy, exporter, API, drafts) + tests/js
 static/         Frontend (no build step — plain HTML/CSS/JS)
   builder-model.js  Pure chapter/slide reorder logic (unit-tested)
+  view-model.js     Pure zoom steps and panel-width clamping (unit-tested)
 scripts/        make_samples.py — generates a try-it-now sample library
 data/           Created at runtime: library.db + thumbnails/ (gitignored)
 ```
