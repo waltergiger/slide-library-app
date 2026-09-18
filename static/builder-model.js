@@ -22,6 +22,15 @@
     return { chapterId, index };
   }
 
+  /** Insert several slides, in order, starting at a slot. Returns the first one's position or null. */
+  function insertSlides(chapters, chapterId, slot, slides) {
+    const ch = findChapter(chapters, chapterId);
+    if (!ch || !slides.length) return null;
+    const start = clampSlot(slot, ch.slides.length);
+    ch.slides.splice(start, 0, ...slides);
+    return { chapterId, index: start };
+  }
+
   /** Move a slide to a slot in the same or another chapter.
    *  Returns the slide's new position, or null if nothing changed. */
   function moveSlide(chapters, from, to) {
@@ -73,7 +82,7 @@
     return null;
   }
 
-  const api = { insertSlide, moveSlide, moveChapter, stepSlide };
+  const api = { insertSlide, insertSlides, moveSlide, moveChapter, stepSlide };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.BuilderModel = api;
 })(typeof self !== "undefined" ? self : this);

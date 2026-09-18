@@ -87,3 +87,13 @@ test("stepSlide: left/right within chapter, up/down across chapters, boundaries"
   assert.deepEqual(M.stepSlide(chs, { chapterId: "b", index: 1 }, "up"), { chapterId: "a", index: 2 });
   assert.equal(M.stepSlide(chs, { chapterId: "c", index: 0 }, "down"), null);
 });
+
+test("insertSlides keeps order, starts at the slot, clamps, rejects empty/unknown", () => {
+  const chs = mk();
+  assert.deepEqual(M.insertSlides(chs, "a", 1, [{ t: "x" }, { t: "y" }]), { chapterId: "a", index: 1 });
+  assert.deepEqual(titles(chs, "a"), ["a0", "x", "y", "a1", "a2"]);
+  M.insertSlides(chs, "c", 99, [{ t: "p" }, { t: "q" }]);
+  assert.deepEqual(titles(chs, "c"), ["p", "q"]);
+  assert.equal(M.insertSlides(chs, "a", 0, []), null);
+  assert.equal(M.insertSlides(chs, "zz", 0, [{ t: "x" }]), null);
+});

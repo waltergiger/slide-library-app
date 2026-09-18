@@ -75,14 +75,14 @@ status chip shows progress and flips to **Indexed** when done. Click
 files are reprocessed, so it's fast after the first run.
 
 Then: browse by domain, search across every deck's actual slide text, open
-a deck to see its slides, select slides (or "Add all") to send them to the
-**Builder**, add chapters, drag slides from the search panel into them, and
-**Export to PowerPoint** when the deck is ready.
+a deck to see its slides, then drag slides (from a deck, from search hits
+or from your favorites) straight into the **deck panel** on the right, and
+**Export .pptx** when the deck is ready.
 
 ### Favorites
 
-Click the star on any slide — in a deck, or in the Builder's search
-results — to mark it a favorite; click it again to unmark it. Favorites
+Click the star on any slide — in a deck, in search hits or in the favorites
+list — to mark it a favorite; click it again to unmark it. Favorites
 survive re-indexing (matched by slide text, so reordering or inserting slides
 doesn't move them; a slide edited in place keeps its star while the slide
 count is unchanged), so they won't disappear when files change on disk.
@@ -111,19 +111,35 @@ unless the files themselves changed.
 
 ## Building and saving decks
 
-In the **Builder**, drag slides from the search results into a chapter — drop
-on a slide to insert before/after it, or on the chapter's empty area to
-append. Drag slides already in the deck to change their order within a
-chapter or to move them into another chapter, and drag a chapter by its grip
-(⠿) to reorder chapters. Keyboard: focus a slide and press **Alt + ←/→** to
-move it within its chapter, **Alt + ↑/↓** to send it to the previous/next
-chapter.
+The **deck panel** on the right of the library (toggle it with **New deck** /
+**Hide deck**) is where a new deck takes shape, so you can drag slides
+directly from what you're browsing on the left:
 
-**Save** (or Ctrl/Cmd+S) stores the deck server-side in `data/library.db`;
-**Open** lists your saved decks so you can pick up where you left off, and
-**New** starts a blank one. The status next to the title shows *Saved*,
-*Unsaved changes* or *Not saved yet*. Between saves, the Builder keeps a
+- **Where to drag from:** slide thumbnails in an open deck (click several to
+  select them, then drag any one to move the whole selection), the
+  **Matching slides** shown above the decks when you search, and the starred
+  slides in the Favorites view. "Add to deck" / "Add all" do the same without
+  dragging.
+- **Where to drop:** onto a slide in a chapter to insert before/after it, onto
+  a chapter's empty area to append, or onto **Drop slides here for a new
+  chapter** to create a chapter named after the source deck.
+- **Reordering:** drag slides within a chapter or into another chapter, and
+  drag a chapter by its grip (⠿) to reorder chapters. Keyboard: focus a slide
+  and press **Alt + ←/→** to move it within its chapter, **Alt + ↑/↓** to send
+  it to the previous/next chapter.
+
+**Name your deck** in the field at the top of the panel and optionally give it
+a **category**; **Save** (or Ctrl/Cmd+S) then stores it server-side in
+`data/library.db` — saving is refused until the deck has a name. **Open
+saved** lists your saved decks, **New** starts a blank one. The status shows
+*Saved*, *Unsaved changes* or *Not saved yet*. Between saves the panel keeps a
 working copy in your browser, so a reload never loses edits.
+
+In **Saved decks** (also in the sidebar) decks are grouped by category, with
+filter chips to show one category. The pencil renames a deck and changes its
+category (pick an existing one or type a new one; leave it empty for
+*Uncategorized*) without touching its slides; each deck has at most one
+category.
 
 A saved deck stores *references* to library slides, not copies. Opening it
 always shows the current thumbnails and titles; if a slide's source file was
@@ -163,7 +179,7 @@ proxy), set `SLIDELIB_ALLOWED_HOSTS=name1,name2`.
 ```
 pip install -r requirements-dev.txt
 python -m pytest                    # backend
-node --test tests/js/*.test.js      # Builder reorder logic (Node 18+, no npm install)
+node --test tests/js/*.test.js      # deck-panel reorder logic (Node 18+, no npm install)
 ```
 Tests use throwaway databases and never touch `data/`; LibreOffice is stubbed
 so they run without it.

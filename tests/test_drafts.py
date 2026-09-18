@@ -81,3 +81,53 @@ def test_export_skips_missing_slides_instead_of_failing(tmp_db):
 def test_draft_writes_reject_cross_origin(client):
     r = client.post("/api/drafts", json={"name": "x", "chapters": []}, headers={"origin": "https://evil.example.com"})
     assert r.status_code == 403
+
+
+def test_category_is_saved_normalised_listed_and_clearable(client):
+    a = client.post("/api/drafts", json={"name": "A", "category": "  Board  ", "chapters": []}).json()
+    b = client.post("/api/drafts", json={"name": "B", "category": "   ", "chapters": []}).json()
+    assert a["category"] == "Board" and b["category"] is None
+    assert client.get(f"/api/drafts/{a['id']}").json()["category"] == "Board"
+
+    client.put(f"/api/drafts/{a['id']}", json={"name": "A", "category": None, "chapters": []})
+    assert client.get(f"/api/drafts/{a['id']}").json()["category"] is None
+
+
+def test_patch_renames_and_recategorises_without_touching_slides(client):
+    fid = add_indexed_file(db.add_source("/x", "D"), "/x/a.pptx", [("s0", "a"), ("s1", "b")])
+    d = client.post("/api/drafts", json=_payload(fid)).json()
+
+    r = client.patch(f"/api/drafts/{d['id']}", json={"name": "  Renamed  "})
+    assert r.status_code == 200 and r.json()["name"] == "Renamed" and r.json()["slide_count"] == 1
+    assert r.json()["category"] is None
+
+    assert client.patch(f"/api/drafts/{d['id']}", json={"category": "Clients"}).json()["category"] == "Clients"
+    kept = client.patch(f"/api/drafts/{d['id']}", json={"name": "Again"}).json()
+    assert kept["category"] == "Clients"  # omitted field is left alone
+    cleared = client.patch(f"/api/drafts/{d['id']}", json={"category": None}).json()
+    assert cleared["category"] is None and cleared["name"] == "Again"
+
+    full = client.get(f"/api/drafts/{d['id']}").json()
+    assert [c["id"] for c in full["chapters"]] == ["c1", "c2"] and len(full["chapters"][0]["slides"]) == 1
+
+
+def test_patch_validation_and_errors(client):
+    d = client.post("/api/drafts", json={"name": "A", "chapters": []}).json()
+    assert client.patch(f"/api/drafts/{d['id']}", json={"name": "   "}).status_code == 400
+    assert client.patch(f"/api/drafts/{d['id']}", json={"category": "x" * 61}).status_code == 422
+    assert client.patch("/api/drafts/999", json={"name": "x"}).status_code == 404
+    assert client.patch("/api/drafts/999", json={}).status_code == 404
+    assert client.patch(f"/api/drafts/{d['id']}", json={}).status_code == 200  # no-op
+    assert client.patch(f"/api/drafts/{d['id']}", json={"name": "x"},
+                        headers={"origin": "https://evil.example.com"}).status_code == 403
+
+
+def test_migration_adds_category_to_existing_drafts_table(tmp_db):
+    conn = db.get_conn()
+    conn.executescript("DROP TABLE drafts; CREATE TABLE drafts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,"
+                       " content TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
+                       " INSERT INTO drafts (name, content, created_at, updated_at) VALUES ('old', '{\"chapters\": []}', 't', 't')")
+    db._migrate(conn)
+    assert db.get_draft(1)["category"] is None
+    assert db.update_draft_meta(1, set_category=True, category="Legacy")
+    assert db.get_draft(1)["category"] == "Legacy"

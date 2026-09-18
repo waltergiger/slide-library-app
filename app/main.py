@@ -230,6 +230,7 @@ def api_search(q: str):
             "title": r["title"],
             "deck_title": r["deck_title"],
             "domain": r["domain"],
+            "ext": r["ext"],
             "thumb_url": f"/api/thumb/{r['thumb_file']}" if r["thumb_file"] else None,
             "favorite": bool(r["favorite"]),
         }
@@ -306,8 +307,15 @@ class DraftChapter(BaseModel):
 
 class DraftIn(BaseModel):
     name: str = Field(default="Untitled deck", max_length=200)
+    category: str | None = Field(default=None, max_length=60)
     add_dividers: bool = True
     chapters: list[DraftChapter]
+
+
+class DraftMetaIn(BaseModel):
+    """Partial update: only the fields actually sent are changed."""
+    name: str | None = Field(default=None, max_length=200)
+    category: str | None = Field(default=None, max_length=60)
 
 
 def _draft_content(body: DraftIn) -> dict:
@@ -318,6 +326,10 @@ def _draft_name(body: DraftIn) -> str:
     return body.name.strip() or "Untitled deck"
 
 
+def _category(value: str | None) -> str | None:
+    return (value or "").strip() or None
+
+
 @app.get("/api/drafts")
 def api_list_drafts():
     return [drafts.summarize(d) for d in db.list_drafts()]
@@ -325,7 +337,7 @@ def api_list_drafts():
 
 @app.post("/api/drafts")
 def api_create_draft(body: DraftIn):
-    draft_id = db.create_draft(_draft_name(body), _draft_content(body))
+    draft_id = db.create_draft(_draft_name(body), _draft_content(body), _category(body.category))
     return drafts.summarize(db.get_draft(draft_id))
 
 
@@ -339,7 +351,21 @@ def api_get_draft(draft_id: int):
 
 @app.put("/api/drafts/{draft_id}")
 def api_update_draft(draft_id: int, body: DraftIn):
-    if not db.update_draft(draft_id, _draft_name(body), _draft_content(body)):
+    if not db.update_draft(draft_id, _draft_name(body), _draft_content(body), _category(body.category)):
+        raise HTTPException(404, "saved deck not found")
+    return drafts.summarize(db.get_draft(draft_id))
+
+
+@app.patch("/api/drafts/{draft_id}")
+def api_patch_draft(draft_id: int, body: DraftMetaIn):
+    name = body.name.strip() if body.name is not None else None
+    if name == "":
+        raise HTTPException(400, "name can't be empty")
+    ok = db.update_draft_meta(
+        draft_id, name,
+        set_category="category" in body.model_fields_set, category=_category(body.category),
+    )
+    if not ok:
         raise HTTPException(404, "saved deck not found")
     return drafts.summarize(db.get_draft(draft_id))
 

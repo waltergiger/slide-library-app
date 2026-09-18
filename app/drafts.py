@@ -37,6 +37,7 @@ def hydrate(draft: dict) -> dict:
     return {
         "id": draft["id"],
         "name": draft["name"],
+        "category": draft["category"],
         "add_dividers": content.get("add_dividers", True),
         "updated_at": draft["updated_at"],
         "chapters": [
@@ -51,6 +52,7 @@ def summarize(draft: dict) -> dict:
     return {
         "id": draft["id"],
         "name": draft["name"],
+        "category": draft["category"],
         "updated_at": draft["updated_at"],
         "chapter_count": len(chapters),
         "slide_count": sum(len(ch["slides"]) for ch in chapters),

@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS drafts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     content TEXT NOT NULL,                        -- JSON: {add_dividers, chapters:[{id,name,slides:[...]}]}
+    category TEXT,                                -- optional single folder-style label, NULL = uncategorized
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -117,6 +118,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.commit()
     if "content_hash" not in cols:
         conn.execute("ALTER TABLE slides ADD COLUMN content_hash TEXT")
+        conn.commit()
+    draft_cols = {row["name"] for row in conn.execute("PRAGMA table_info(drafts)")}
+    if "category" not in draft_cols:
+        conn.execute("ALTER TABLE drafts ADD COLUMN category TEXT")
         conn.commit()
 
 
@@ -378,7 +383,7 @@ def _fts_query(q: str) -> str:
 def search_slides(query: str, limit: int = 40) -> list[sqlite3.Row]:
     conn = get_conn()
     sql = """
-        SELECT slides.*, files.title AS deck_title, files.domain AS domain, files.path AS file_path
+        SELECT slides.*, files.title AS deck_title, files.domain AS domain, files.ext AS ext, files.path AS file_path
         FROM slides_fts
         JOIN slides ON slides.id = slides_fts.rowid
         JOIN files ON files.id = slides.file_id
@@ -414,23 +419,43 @@ def list_favorites(domain: str | None = None, query: str | None = None) -> list[
 
 # ---- drafts (saved Builder decks) ------------------------------------------
 
-def create_draft(name: str, content: dict) -> int:
+def create_draft(name: str, content: dict, category: str | None = None) -> int:
     conn = get_conn()
     ts = now()
     cur = conn.execute(
-        "INSERT INTO drafts (name, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        (name, json.dumps(content), ts, ts),
+        "INSERT INTO drafts (name, content, category, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (name, json.dumps(content), category, ts, ts),
     )
     conn.commit()
     return cur.lastrowid
 
 
-def update_draft(draft_id: int, name: str, content: dict) -> bool:
+def update_draft(draft_id: int, name: str, content: dict, category: str | None = None) -> bool:
     conn = get_conn()
     cur = conn.execute(
-        "UPDATE drafts SET name = ?, content = ?, updated_at = ? WHERE id = ?",
-        (name, json.dumps(content), now(), draft_id),
+        "UPDATE drafts SET name = ?, content = ?, category = ?, updated_at = ? WHERE id = ?",
+        (name, json.dumps(content), category, now(), draft_id),
     )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def update_draft_meta(draft_id: int, name: str | None = None, *, set_category: bool = False,
+                      category: str | None = None) -> bool:
+    """Rename and/or recategorise without touching the deck's slides.
+    `set_category` distinguishes "clear the category" (True, None) from
+    "leave it alone" (False)."""
+    sets, params = [], []
+    if name is not None:
+        sets.append("name = ?")
+        params.append(name)
+    if set_category:
+        sets.append("category = ?")
+        params.append(category)
+    if not sets:
+        return get_draft(draft_id) is not None
+    conn = get_conn()
+    cur = conn.execute(f"UPDATE drafts SET {', '.join(sets)}, updated_at = ? WHERE id = ?", (*params, now(), draft_id))
     conn.commit()
     return cur.rowcount > 0
 
@@ -456,6 +481,7 @@ def _draft_dict(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
         "name": row["name"],
+        "category": row["category"],
         "content": json.loads(row["content"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],

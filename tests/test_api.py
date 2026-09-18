@@ -34,7 +34,7 @@ def test_search_and_favorite_roundtrip(client):
     sid = db.add_source("/x", "Strategy")
     fid = add_indexed_file(sid, "/x/a.pptx", [("Wealth", "digital wealth plan")])
     hits = client.get("/api/search", params={"q": "wealth"}).json()
-    assert hits[0]["file_id"] == fid and hits[0]["favorite"] is False
+    assert hits[0]["file_id"] == fid and hits[0]["favorite"] is False and hits[0]["ext"] == "pptx"
 
     assert client.post(f"/api/decks/{fid}/slides/0/favorite", json={"favorite": True}).status_code == 200
     assert client.get("/api/favorites").json()[0]["title"] == "Wealth"
