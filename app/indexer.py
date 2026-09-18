@@ -23,7 +23,7 @@ from pathlib import Path
 import fitz  # PyMuPDF
 from pptx import Presentation
 
-from . import db, soffice
+from . import db
 
 log = logging.getLogger("slide-library.indexer")
 
@@ -192,29 +192,15 @@ def _render_pptx_thumbnails(path: Path) -> dict[int, str]:
         return out
 
 
-_warned_no_soffice = False
-
-
 def _convert_to_pdf(path: Path, out_dir: Path) -> Path | None:
-    global _warned_no_soffice
-    exe = soffice.find_soffice()
-    if exe is None:
-        if not _warned_no_soffice:
-            log.warning("LibreOffice (soffice) not found — slides are indexed without thumbnails. "
-                        "Install LibreOffice or set SLIDELIB_SOFFICE to its soffice executable.")
-            _warned_no_soffice = True
-        return None
     profile_dir = out_dir / "lo_profile"
     cmd = [
-        exe, "--headless", "--norestore", "--nologo", "--nofirststartwizard",
-        # as_uri() yields file:///C:/... on Windows; a hand-built file://C:\... is not a valid URL
-        f"-env:UserInstallation={profile_dir.as_uri()}",
+        "soffice", "--headless", "--norestore", "--nologo", "--nofirststartwizard",
+        f"-env:UserInstallation=file://{profile_dir}",
         "--convert-to", "pdf", "--outdir", str(out_dir), str(path),
     ]
-    # No flashing console window when running as a windowed/packaged app on Windows.
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     with _soffice_lock:
-        result = subprocess.run(cmd, capture_output=True, timeout=120, creationflags=flags)
+        result = subprocess.run(cmd, capture_output=True, timeout=120)
     if result.returncode != 0:
         log.warning("soffice failed for %s: %s", path, result.stderr.decode(errors="replace"))
         return None
@@ -253,8 +239,7 @@ class PdfRenderCache:
             out_dir.mkdir()
             pdf = _convert_to_pdf(path, out_dir)
             if pdf is None:
-                hint = " LibreOffice was not found — install it (or set SLIDELIB_SOFFICE)." if soffice.find_soffice() is None else ""
-                raise RuntimeError(f"Could not render {path} for export.{hint}")
+                raise RuntimeError(f"Could not render {path} for export")
             self._pdfs[key] = pdf
         return self._pdfs[key]
 

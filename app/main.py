@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, drafts, exporter, file_opener, folder_picker, indexer, soffice
+from . import db, drafts, exporter, file_opener, folder_picker, indexer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -59,13 +59,6 @@ async def _validate_host_and_origin(request: Request, call_next):
         if origin and _hostname(urlsplit(origin).netloc) not in ALLOWED_HOSTS:
             return JSONResponse({"detail": "Cross-origin request blocked"}, status_code=403)
     return await call_next(request)
-
-
-@app.get("/api/health")
-def api_health():
-    """Lets the UI warn when LibreOffice is missing (no thumbnails / image fallback)."""
-    path = soffice.find_soffice()
-    return {"libreoffice": path is not None, "libreoffice_path": path}
 
 
 # ---------------------------------------------------------------- sources --

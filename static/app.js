@@ -83,8 +83,6 @@
     builder: loadBuilder(),
     slideResults: [],
     panelOpen: readPref(PANEL_KEY) !== "closed",
-    health: null,
-    dismissLoBanner: false,
     zoom: ViewModel.normalizeZoom(readPref(ZOOM_KEY)),
     panelWidth: ViewModel.clampPanelWidth(readPref(PANEL_W_KEY), window.innerWidth),
     dragging: null,
@@ -488,11 +486,6 @@
         </div>
       </div>
       <div class="main">
-        ${state.health && !state.health.libreoffice && !state.dismissLoBanner ? `<div class="banner warn" role="alert">
-          <div><strong>LibreOffice not found.</strong> Slides are indexed without thumbnails and export can't use its image fallback.
-          Install LibreOffice from libreoffice.org (or point SLIDELIB_SOFFICE at its <em>soffice</em> executable), then re-index your sources.</div>
-          <button type="button" class="icon-btn sm" data-action="dismissLoBanner" aria-label="Dismiss warning">${ICON.x}</button>
-        </div>` : ""}
         <div class="top-row">
           <div class="search-wrap" style="flex-grow:1;max-width:420px;">
             ${ICON.search.replace("<svg", '<svg class="search-icon"')}
@@ -1010,7 +1003,6 @@
     }
 
     if (action === "exportDeck") return doExport();
-    if (action === "dismissLoBanner") { state.dismissLoBanner = true; return render(); }
     if (action === "openFile") return openFile(Number(el.dataset.id));
     if (action === "togglePanel") return togglePanel();
     if (action === "zoomIn") return setZoom(ViewModel.stepZoom(state.zoom, 1));
@@ -1300,8 +1292,7 @@
     applyLayout();
     document.getElementById("app").innerHTML = `<div style="padding:40px;color:var(--text-secondary);">Loading your library…</div>`;
     try {
-      await Promise.all([refreshDomains(), refreshDecks(), refreshSources(), refreshDrafts().catch(() => {}),
-        api("/api/health").then((h) => { state.health = h; }).catch(() => {})]);
+      await Promise.all([refreshDomains(), refreshDecks(), refreshSources(), refreshDrafts().catch(() => {})]);
     } catch (err) {
       document.getElementById("app").innerHTML = `<div style="padding:40px;color:var(--red-text);">Could not reach the server: ${esc(String(err.message || err))}</div>`;
       return;
