@@ -6,3 +6,6 @@ data/thumbnails/
 .pytest_cache/
 sample-library/
 .DS_Store
+slide-library-exe/dist/
+slide-library-exe/build/
+slide-library-exe/.venv-build/

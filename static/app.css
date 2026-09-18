@@ -149,6 +149,9 @@ input, select { font-family: inherit; }
 .deck-title { font-size: 14.5px; font-weight: 600; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2;
   -webkit-box-orient: vertical; overflow: hidden; min-height: 39px; }
 .deck-meta { font-size: 12.5px; color: var(--text-secondary); }
+.banner { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 12px;
+  font-size: 13px; line-height: 1.45; }
+.banner.warn { background: var(--amber-bg); color: var(--amber-text); border: 1px solid var(--amber-text); }
 .fav-group { display: flex; flex-direction: column; gap: 12px; }
 .fav-group-head { display: flex; align-items: center; gap: 10px; }
 .fav-group-head .count { font-size: 12.5px; color: var(--text-secondary); }

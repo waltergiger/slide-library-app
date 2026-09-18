@@ -1,0 +1,60 @@
+# Builds SlideLibrary.exe on a Windows runner (PyInstaller cannot cross-compile),
+# smoke-tests it, and publishes it as a downloadable artifact.
+# (GitHub only reads workflows from the repository root; the build itself lives in slide-library-exe/.)
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:          # Actions tab -> "Build Windows EXE" -> Run workflow
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install build dependencies
+        run: python -m pip install -r slide-library-exe/requirements-build.txt -r requirements-dev.txt
+
+      - name: Unit tests (informational on Windows)
+        continue-on-error: true
+        run: python -m pytest -q
+
+      - name: Build SlideLibrary.exe
+        working-directory: slide-library-exe
+        run: pyinstaller --clean --noconfirm slide_library.spec
+
+      - name: Smoke test the built exe
+        shell: pwsh
+        run: |
+          $env:SLIDELIB_DATA_DIR = "$env:RUNNER_TEMP\slidelib-data"
+          $env:SLIDELIB_NO_BROWSER = "1"
+          $p = Start-Process -FilePath "slide-library-exe\dist\SlideLibrary.exe" -PassThru
+          try {
+            $health = $null
+            for ($i = 0; $i -lt 60 -and -not $health; $i++) {
+              Start-Sleep -Seconds 1
+              try { $health = Invoke-RestMethod http://127.0.0.1:8420/api/health } catch {}
+            }
+            if (-not $health) { throw "SlideLibrary.exe did not start" }
+            Write-Host "health: $($health | ConvertTo-Json -Compress)"
+            $index = Invoke-WebRequest http://127.0.0.1:8420/ -UseBasicParsing
+            if ($index.Content -notmatch 'id="app"') { throw "index.html not served from the bundle" }
+            $js = Invoke-WebRequest http://127.0.0.1:8420/app.js -UseBasicParsing
+            if ($js.StatusCode -ne 200) { throw "app.js not served" }
+            if (-not (Test-Path "$env:SLIDELIB_DATA_DIR\library.db")) { throw "index database not created in SLIDELIB_DATA_DIR" }
+          } finally {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SlideLibrary-windows
+          path: slide-library-exe/dist/SlideLibrary.exe
+          if-no-files-found: error

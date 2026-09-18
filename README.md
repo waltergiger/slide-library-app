@@ -110,6 +110,14 @@ The **★ Favorites** toggle above the deck grid has two modes:
 Turning Favorites on clears the type toggles (and restores them when you turn
 it off again if you haven't picked a type in the meantime).
 
+## Windows .exe
+
+`slide-library-exe/` builds the app into a single `SlideLibrary.exe` (build on
+Windows with `build.bat`, or use the **Build Windows EXE** GitHub workflow).
+See [slide-library-exe/README.md](slide-library-exe/README.md). LibreOffice
+must still be installed separately; the app finds it in `Program Files`, or via
+`SLIDELIB_SOFFICE`.
+
 ## Running it day to day
 
 ```
@@ -218,6 +226,8 @@ app/            FastAPI backend
   drafts.py       Resolves saved Builder decks against the live index
   folder_picker.py  Native folder dialog, run out-of-process
   file_opener.py    Opens an indexed file in the default desktop app
+  soffice.py        Locates the LibreOffice executable (PATH, standard install dirs)
+slide-library-exe/  PyInstaller build for the Windows .exe (launcher, spec, build.bat)
 tests/          pytest suite (db, pptx copy, exporter, API, drafts) + tests/js
 static/         Frontend (no build step — plain HTML/CSS/JS)
   builder-model.js  Pure chapter/slide reorder logic (unit-tested)

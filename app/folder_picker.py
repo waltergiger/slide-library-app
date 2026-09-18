@@ -16,6 +16,19 @@ import sys
 
 PROMPT = "Choose a slide library folder"
 
+# Windows: the stock folder dialog via PowerShell — no tkinter needed, and (unlike
+# `sys.executable -c ...`) safe inside a PyInstaller exe, where sys.executable is
+# the app itself and would start a second copy of it.
+_PS_SCRIPT = """
+Add-Type -AssemblyName System.Windows.Forms
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+$owner = New-Object System.Windows.Forms.Form -Property @{TopMost = $true}
+$dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+$dlg.Description = '%s'
+$dlg.ShowNewFolderButton = $false
+if ($dlg.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dlg.SelectedPath) }
+"""
+
 _TK_SCRIPT = """
 import sys
 try:
@@ -41,6 +54,10 @@ def pick_folder(prompt: str = PROMPT) -> str | None:
     """Returns the chosen folder, or None if the user cancelled."""
     if sys.platform == "darwin":
         return _pick_macos(prompt)
+    if sys.platform.startswith("win"):
+        return _pick_windows(prompt)
+    if getattr(sys, "frozen", False):
+        raise PickerUnavailable("the packaged app has no folder dialog on this platform")
     return _pick_tk(prompt)
 
 
@@ -52,6 +69,14 @@ def _pick_macos(prompt: str) -> str | None:
             return None
         raise PickerUnavailable(result.stderr.strip() or "osascript failed")
     return _clean(result.stdout)
+
+
+def _pick_windows(prompt: str) -> str | None:
+    script = _PS_SCRIPT % prompt.replace("'", "''")  # single-quote escaping for PowerShell
+    result = _run(["powershell", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", script], encoding="utf-8")
+    if result.returncode != 0:
+        raise PickerUnavailable(result.stderr.strip() or "PowerShell folder dialog failed")
+    return _clean(result.stdout)  # empty output = cancelled
 
 
 def _pick_tk(prompt: str) -> str | None:
@@ -66,15 +91,16 @@ def _pick_tk(prompt: str) -> str | None:
     return _clean(result.stdout)
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess:
+def _run(cmd: list[str], encoding: str | None = None) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(cmd, capture_output=True, text=True)
+        return subprocess.run(cmd, capture_output=True, text=True, encoding=encoding,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except OSError as exc:
         raise PickerUnavailable(str(exc)) from exc
 
 
 def _clean(stdout: str) -> str | None:
-    path = stdout.strip()
+    path = stdout.strip().lstrip("\ufeff")
     if len(path) > 1:
         path = path.rstrip("/")  # osascript appends a trailing slash
     return path or None

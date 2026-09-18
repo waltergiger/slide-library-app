@@ -6,13 +6,16 @@ backed up, deleted, or rebuilt by deleting that one file.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-DATA_DIR.mkdir(exist_ok=True)
+# SLIDELIB_DATA_DIR relocates the index: the packaged .exe keeps it in the user's
+# profile because its own folder is read-only / temporary.
+DATA_DIR = Path(os.environ.get("SLIDELIB_DATA_DIR") or Path(__file__).resolve().parent.parent / "data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / "library.db"
 THUMB_DIR = DATA_DIR / "thumbnails"
 THUMB_DIR.mkdir(exist_ok=True)
