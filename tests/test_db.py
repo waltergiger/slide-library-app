@@ -97,3 +97,20 @@ def test_migration_adds_content_hash_to_old_database(tmp_db):
     db._migrate(conn)
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(slides)")}
     assert {"favorite", "content_hash"} <= cols
+
+
+def test_list_favorites_filters_by_domain_and_query(tmp_db):
+    s1, s2 = db.add_source("/x", "Strategy"), db.add_source("/y", "Architecture")
+    a = add_indexed_file(s1, "/x/a.pptx", [("Wealth", "digital wealth plan"), ("Other", "misc")])
+    b = add_indexed_file(s2, "/y/b.pptx", [("Target", "target architecture")])
+    with db.get_conn() as c:
+        c.execute("UPDATE files SET domain='Strategy' WHERE id=?", (a,))
+        c.execute("UPDATE files SET domain='Architecture' WHERE id=?", (b,))
+    for fid, idx in [(a, 0), (a, 1), (b, 0)]:
+        db.set_slide_favorite(fid, idx, True)
+
+    assert [r["domain"] for r in db.list_favorites()] == ["Architecture", "Strategy", "Strategy"]
+    assert len(db.list_favorites("Strategy")) == 2
+    assert len(db.list_favorites("All domains")) == 3
+    assert [r["title"] for r in db.list_favorites(None, "wealth")] == ["Wealth"]
+    assert [r["title"] for r in db.list_favorites("Architecture", "wealth")] == []

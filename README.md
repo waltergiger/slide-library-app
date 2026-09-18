@@ -85,10 +85,18 @@ Click the star on any slide — in a deck, or in the Builder's search
 results — to mark it a favorite; click it again to unmark it. Favorites
 survive re-indexing (matched by slide text, so reordering or inserting slides
 doesn't move them; a slide edited in place keeps its star while the slide
-count is unchanged), so they won't disappear when files change on disk. Back in the library, use the **PPTX** / **PDF**
-/ **★ Favorites** toggles above the deck grid to narrow what you're
-browsing — turn off a file type to hide it, or turn on Favorites to see
-only decks that contain at least one starred slide.
+count is unchanged), so they won't disappear when files change on disk.
+
+The **★ Favorites** toggle above the deck grid has two modes:
+
+- **Favorites alone** (no file type selected) lists the starred slides
+  themselves, grouped by domain. Click a slide to open its deck, or its star
+  to unmark it. The sidebar domain and the search box still apply.
+- **Favorites plus PPTX and/or PDF** lists the decks of that type that
+  contain at least one starred slide.
+
+Turning Favorites on clears the type toggles (and restores them when you turn
+it off again if you haven't picked a type in the meantime).
 
 ## Running it day to day
 

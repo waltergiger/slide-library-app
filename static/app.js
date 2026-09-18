@@ -49,7 +49,9 @@
     selectedDomain: "All domains",
     query: "",
     filters: { pptx: true, pdf: true, favoritesOnly: false },
+    typesBeforeFavorites: null,
     decks: [],
+    favSlides: [],
     currentDeck: null,
     slideSelection: new Set(),
     sources: [],
@@ -77,10 +79,18 @@
   }
 
   async function refreshDomains() { state.domains = await api("/api/domains"); }
+  // Favorites with no file type chosen lists the starred slides themselves;
+  // choosing PPTX and/or PDF as well lists the decks that contain them.
+  const favoriteSlidesMode = () => state.filters.favoritesOnly && !state.filters.pptx && !state.filters.pdf;
+
   async function refreshDecks() {
     const params = new URLSearchParams();
     if (state.selectedDomain && state.selectedDomain !== "All domains") params.set("domain", state.selectedDomain);
     if (state.query.trim()) params.set("q", state.query.trim());
+    if (favoriteSlidesMode()) {
+      state.favSlides = await api(`/api/favorites?${params}`);
+      return;
+    }
     if (state.filters.favoritesOnly) params.set("favorites_only", "true");
     state.decks = await api(`/api/decks?${params}`);
   }
@@ -206,6 +216,8 @@
       </button>`;
     }).join("");
 
+    if (favoriteSlidesMode()) return renderLibraryShell(domainsHtml, renderFavoriteSlides());
+
     const typeVisible = (ext) => (ext === "pdf" ? state.filters.pdf : state.filters.pptx);
     const noTypeSelected = !state.filters.pptx && !state.filters.pdf;
     const visibleDecks = noTypeSelected ? [] : state.decks.filter((d) => typeVisible(d.ext));
@@ -232,16 +244,49 @@
       ? `<div class="deck-grid">${decksHtml}</div>`
       : `<div class="empty-state">${ICON.search}<span style="font-size:14.5px;">${state.decks === null ? "Loading…" : emptyMessage}</span></div>`;
 
+    return renderLibraryShell(domainsHtml, body, visibleDecks.length);
+  }
+
+  function filterRow() {
     const filterChip = (key, label, iconHtml) => `<label class="filter-chip ${state.filters[key] ? "active" : ""}">
       <input type="checkbox" data-bind="filter-${key}" ${state.filters[key] ? "checked" : ""}>
       ${iconHtml || ""}${label}
     </label>`;
-    const filterRow = `<div class="filter-row">
+    return `<div class="filter-row">
       ${filterChip("pptx", "PPTX")}
       ${filterChip("pdf", "PDF")}
       ${filterChip("favoritesOnly", "Favorites", ICON.starFill)}
     </div>`;
+  }
 
+  function renderFavoriteSlides() {
+    const slides = state.favSlides;
+    if (!slides.length) {
+      const msg = state.query ? `No favorite slides match "${esc(state.query)}".` : "No favorite slides yet — star a few slides in a deck first.";
+      return { count: 0, unit: "slide", html: `<div class="empty-state">${ICON.starFill}<span style="font-size:14.5px;">${msg}</span></div>` };
+    }
+    const groups = new Map();
+    slides.forEach((f) => { if (!groups.has(f.domain)) groups.set(f.domain, []); groups.get(f.domain).push(f); });
+    const html = [...groups].map(([domain, items]) => `<section class="fav-group">
+      <div class="fav-group-head"><span class="tag">${esc(domain)}</span><span class="count">${items.length} slide${items.length === 1 ? "" : "s"}</span></div>
+      <div class="fav-grid">${items.map((f) => {
+        const b = badgeFor(f.ext);
+        return `<div class="fav-tile">
+          <div class="slide-card" data-action="openDeck" data-id="${f.file_id}" role="button" tabindex="0" aria-label="${esc(f.title)}, from ${esc(f.deck_title)}, slide ${f.slide_index + 1}">
+            ${f.thumb_url ? `<img src="${esc(f.thumb_url)}" alt="">` : `<div class="title">${esc(f.title)}</div>`}
+            <button type="button" class="star-btn active" data-action="toggleFavorite" data-file-id="${f.file_id}" data-index="${f.slide_index}" data-favorite="1" aria-label="Remove from favorites" aria-pressed="true">${ICON.starFill}</button>
+            <div class="slide-index">${f.slide_index + 1}</div>
+          </div>
+          <div class="fav-caption"><div class="t">${esc(f.title)}</div><div class="d"><span class="badge-mini ${b.cls}">${b.label}</span>${esc(f.deck_title)}</div></div>
+        </div>`;
+      }).join("")}</div>
+    </section>`).join("");
+    return { count: slides.length, unit: "slide", html };
+  }
+
+  function renderLibraryShell(domainsHtml, body, deckCount) {
+    // Favorites-slide mode passes {count, unit, html}; deck mode passes html + deck count.
+    const { count, unit, html } = typeof body === "string" ? { count: deckCount, unit: "deck", html: body } : body;
     return `<div class="shell">
       <div class="sidebar">
         <div>
@@ -269,9 +314,9 @@
             <button type="button" class="btn btn-primary" data-action="goto" data-view="builder">${ICON.plus} New deck</button>
           </div>
         </div>
-        ${filterRow}
-        <div class="heading-row"><h1>${esc(state.selectedDomain)}</h1><span class="count">${visibleDecks.length} deck${visibleDecks.length === 1 ? "" : "s"}</span></div>
-        ${body}
+        ${filterRow()}
+        <div class="heading-row"><h1>${esc(state.selectedDomain)}</h1><span class="count">${count} ${unit}${count === 1 ? "" : "s"}</span></div>
+        ${html}
       </div>
     </div>`;
   }
@@ -514,8 +559,15 @@
     else if (name.startsWith("filter-")) {
       const key = name.slice("filter-".length);
       state.filters[key] = v;
-      if (key === "favoritesOnly") refreshDecks().then(render);
-      else render();
+      if (key === "favoritesOnly") {
+        if (v) {
+          state.typesBeforeFavorites = { pptx: state.filters.pptx, pdf: state.filters.pdf };
+          state.filters.pptx = state.filters.pdf = false;
+        } else if (!state.filters.pptx && !state.filters.pdf) {
+          Object.assign(state.filters, state.typesBeforeFavorites || { pptx: true, pdf: true });
+        }
+      }
+      refreshDecks().then(render);
     }
   }
 

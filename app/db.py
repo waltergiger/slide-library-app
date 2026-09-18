@@ -332,7 +332,7 @@ def list_decks(domain: str | None, query: str | None, favorites_only: bool = Fal
             "UNION SELECT id FROM files WHERE title LIKE ? ESCAPE '\\')"
         )
         params.append(_fts_query(query))
-        params.append("%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+        params.append(_like_pattern(query))
     if favorites_only:
         clauses.append("id IN (SELECT file_id FROM slides WHERE favorite = 1)")
     if clauses:
@@ -351,6 +351,10 @@ def get_slide(file_id: int, slide_index: int) -> sqlite3.Row | None:
     return get_conn().execute(
         "SELECT * FROM slides WHERE file_id = ? AND slide_index = ?", (file_id, slide_index)
     ).fetchone()
+
+
+def _like_pattern(q: str) -> str:
+    return "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
 def _fts_query(q: str) -> str:
@@ -373,13 +377,24 @@ def search_slides(query: str, limit: int = 40) -> list[sqlite3.Row]:
     return conn.execute(sql, (_fts_query(query), limit)).fetchall()
 
 
-def list_favorites() -> list[sqlite3.Row]:
+def list_favorites(domain: str | None = None, query: str | None = None) -> list[sqlite3.Row]:
     conn = get_conn()
-    sql = """
+    clauses, params = ["slides.favorite = 1"], []
+    if domain and domain != "All domains":
+        clauses.append("files.domain = ?")
+        params.append(domain)
+    if query and query.strip():
+        clauses.append(
+            "(slides.id IN (SELECT rowid FROM slides_fts WHERE slides_fts MATCH ?) "
+            "OR files.title LIKE ? ESCAPE '\\')"
+        )
+        params.append(_fts_query(query))
+        params.append(_like_pattern(query))
+    sql = f"""
         SELECT slides.*, files.title AS deck_title, files.domain AS domain, files.ext AS ext, files.path AS file_path
         FROM slides
         JOIN files ON files.id = slides.file_id
-        WHERE slides.favorite = 1
-        ORDER BY files.title, slides.slide_index
+        WHERE {" AND ".join(clauses)}
+        ORDER BY files.domain, files.title, slides.slide_index
     """
-    return conn.execute(sql).fetchall()
+    return conn.execute(sql, params).fetchall()

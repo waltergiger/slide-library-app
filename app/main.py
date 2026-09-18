@@ -199,8 +199,8 @@ def api_set_favorite(file_id: int, slide_index: int, body: FavoriteIn):
 
 
 @app.get("/api/favorites")
-def api_favorites():
-    rows = db.list_favorites()
+def api_favorites(domain: str | None = None, q: str | None = None):
+    rows = db.list_favorites(domain, q)
     return [
         {
             "file_id": r["file_id"],
