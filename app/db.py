@@ -5,6 +5,7 @@ backed up, deleted, or rebuilt by deleting that one file.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -54,6 +55,17 @@ CREATE TABLE IF NOT EXISTS slides (
     favorite INTEGER NOT NULL DEFAULT 0,
     content_hash TEXT,
     UNIQUE(file_id, slide_index)
+);
+
+-- Saved Builder decks. Slides are stored as references (file_id + slide_index,
+-- with a title snapshot for display if the slide later disappears), never as
+-- copies, so an opened draft always reflects the current library.
+CREATE TABLE IF NOT EXISTS drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    content TEXT NOT NULL,                        -- JSON: {add_dividers, chapters:[{id,name,slides:[...]}]}
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS slides_fts USING fts5(
@@ -398,3 +410,53 @@ def list_favorites(domain: str | None = None, query: str | None = None) -> list[
         ORDER BY files.domain, files.title, slides.slide_index
     """
     return conn.execute(sql, params).fetchall()
+
+
+# ---- drafts (saved Builder decks) ------------------------------------------
+
+def create_draft(name: str, content: dict) -> int:
+    conn = get_conn()
+    ts = now()
+    cur = conn.execute(
+        "INSERT INTO drafts (name, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (name, json.dumps(content), ts, ts),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_draft(draft_id: int, name: str, content: dict) -> bool:
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE drafts SET name = ?, content = ?, updated_at = ? WHERE id = ?",
+        (name, json.dumps(content), now(), draft_id),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def get_draft(draft_id: int) -> dict | None:
+    row = get_conn().execute("SELECT * FROM drafts WHERE id = ?", (draft_id,)).fetchone()
+    return _draft_dict(row) if row else None
+
+
+def list_drafts() -> list[dict]:
+    rows = get_conn().execute("SELECT * FROM drafts ORDER BY updated_at DESC, id DESC").fetchall()
+    return [_draft_dict(r) for r in rows]
+
+
+def delete_draft(draft_id: int) -> bool:
+    conn = get_conn()
+    cur = conn.execute("DELETE FROM drafts WHERE id = ?", (draft_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def _draft_dict(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "content": json.loads(row["content"]),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }

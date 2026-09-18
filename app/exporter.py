@@ -49,6 +49,9 @@ def _add_one_slide(target: Presentation, blank_layout, ref: dict, cache) -> None
     if file_row is None:
         return
     slide_index = ref["slide_index"]
+    if not 0 <= slide_index < file_row["slide_count"]:
+        log.warning("Skipping %s slide %s: no longer in the file", file_row["path"], slide_index)
+        return  # e.g. a saved deck referencing a slide since removed from its source
 
     if file_row["ext"] == "pdf":
         _paste_image_slide(target, blank_layout, file_row, slide_index, cache)

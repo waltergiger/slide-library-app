@@ -11,9 +11,9 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from . import db, exporter, folder_picker, indexer
+from . import db, drafts, exporter, folder_picker, indexer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -285,6 +285,70 @@ def api_export(body: ExportIn):
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ------------------------------------------------------------------ drafts --
+# Saved Builder decks: stored server-side (SQLite) so they survive a browser
+# change or cleared site data, unlike the Builder's localStorage working copy.
+
+class DraftSlide(BaseModel):
+    file_id: int
+    slide_index: int
+    title: str | None = None       # snapshots, only shown if the slide later disappears
+    deck_title: str | None = None
+
+
+class DraftChapter(BaseModel):
+    id: str
+    name: str
+    slides: list[DraftSlide]
+
+
+class DraftIn(BaseModel):
+    name: str = Field(default="Untitled deck", max_length=200)
+    add_dividers: bool = True
+    chapters: list[DraftChapter]
+
+
+def _draft_content(body: DraftIn) -> dict:
+    return {"add_dividers": body.add_dividers, "chapters": [c.model_dump() for c in body.chapters]}
+
+
+def _draft_name(body: DraftIn) -> str:
+    return body.name.strip() or "Untitled deck"
+
+
+@app.get("/api/drafts")
+def api_list_drafts():
+    return [drafts.summarize(d) for d in db.list_drafts()]
+
+
+@app.post("/api/drafts")
+def api_create_draft(body: DraftIn):
+    draft_id = db.create_draft(_draft_name(body), _draft_content(body))
+    return drafts.summarize(db.get_draft(draft_id))
+
+
+@app.get("/api/drafts/{draft_id}")
+def api_get_draft(draft_id: int):
+    draft = db.get_draft(draft_id)
+    if draft is None:
+        raise HTTPException(404, "saved deck not found")
+    return drafts.hydrate(draft)
+
+
+@app.put("/api/drafts/{draft_id}")
+def api_update_draft(draft_id: int, body: DraftIn):
+    if not db.update_draft(draft_id, _draft_name(body), _draft_content(body)):
+        raise HTTPException(404, "saved deck not found")
+    return drafts.summarize(db.get_draft(draft_id))
+
+
+@app.delete("/api/drafts/{draft_id}")
+def api_delete_draft(draft_id: int):
+    if not db.delete_draft(draft_id):
+        raise HTTPException(404, "saved deck not found")
+    return {"ok": True}
 
 
 # -------------------------------------------------------------- static app --

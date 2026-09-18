@@ -22,6 +22,7 @@
     trash: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m2 0-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6"/></svg>`,
     download: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 19h16"/></svg>`,
     star: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.7 5.9 6.3.7-4.7 4.4 1.3 6.2L12 17.3 6.4 20.2l1.3-6.2-4.7-4.4 6.3-.7Z"/></svg>`,
+    save: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>`,
     starFill: `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.7 5.9 6.3.7-4.7 4.4 1.3 6.2L12 17.3 6.4 20.2l1.3-6.2-4.7-4.4 6.3-.7Z"/></svg>`,
   };
 
@@ -31,15 +32,22 @@
   const BUILDER_KEY = "slidelib-builder";
   const THEME_KEY = "slidelib-theme";
 
+  // The Builder is auto-kept in localStorage as a working copy (survives a
+  // reload); "Save" additionally stores it server-side as a named deck that
+  // can be reopened from any browser. `dirty` = edits since the last Save.
+  const emptyBuilder = () => ({ title: "New Deck", addDividers: true, chapters: [], draftId: null, dirty: false, savedAt: null });
+
   function loadBuilder() {
     try {
       const raw = localStorage.getItem(BUILDER_KEY);
-      if (raw) return JSON.parse(raw);
+      if (raw) return { ...emptyBuilder(), ...JSON.parse(raw) };
     } catch (e) { /* ignore corrupt storage */ }
-    return { title: "New Deck", addDividers: true, chapters: [] };
+    return emptyBuilder();
   }
-  function saveBuilder() {
+  function saveBuilder(markDirty = true) {
+    if (markDirty) state.builder.dirty = true;
     try { localStorage.setItem(BUILDER_KEY, JSON.stringify(state.builder)); } catch (e) { /* storage full/blocked */ }
+    refreshSaveStatus();
   }
 
   const state = {
@@ -62,6 +70,10 @@
     builderQuery: "",
     builderResults: [],
     dragging: null,
+    dropTarget: null,
+    showDrafts: false,
+    drafts: [],
+    saving: false,
     toast: null,
   };
 
@@ -73,7 +85,9 @@
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      throw new Error(body.detail || `Request failed (${res.status})`);
+      const err = new Error(body.detail || `Request failed (${res.status})`);
+      err.status = res.status;
+      throw err;
     }
     return res.json();
   }
@@ -151,18 +165,40 @@
     return ch;
   }
 
+  const slideRef = (slide) => ({
+    file_id: slide.file_id,
+    slide_index: slide.slide_index,
+    title: slide.title,
+    deck_title: slide.deck_title,
+    thumb_url: slide.thumb_url,
+  });
+
   function addSlideToChapter(chapterId, slide) {
-    const ch = state.builder.chapters.find((c) => c.id === chapterId);
-    if (!ch) return;
-    ch.slides.push({
-      file_id: slide.file_id,
-      slide_index: slide.slide_index,
-      title: slide.title,
-      deck_title: slide.deck_title,
-      thumb_url: slide.thumb_url,
-    });
-    saveBuilder();
+    if (BuilderModel.insertSlide(state.builder.chapters, chapterId, Infinity, slideRef(slide))) saveBuilder();
   }
+
+  const builderSlideCount = () => state.builder.chapters.reduce((n, c) => n + c.slides.length, 0);
+
+  function builderStatus() {
+    const b = state.builder;
+    if (state.saving) return { cls: "", text: "Saving…" };
+    if (b.draftId && !b.dirty) {
+      const t = b.savedAt ? new Date(b.savedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+      return { cls: "saved", text: `Saved${t ? " " + t : ""}` };
+    }
+    if (b.draftId) return { cls: "dirty", text: "Unsaved changes" };
+    return { cls: builderSlideCount() ? "dirty" : "", text: "Not saved yet" };
+  }
+  // Updates the status chip in place — used while typing, where a full render() would steal input focus.
+  function refreshSaveStatus() {
+    const el = document.getElementById("saveStatus");
+    if (!el) return;
+    const st = builderStatus();
+    el.className = "save-status " + st.cls;
+    el.textContent = st.text;
+  }
+
+  let pendingFocus = null;
 
   async function toggleFavoriteFor(fileId, slideIndex, nextValue) {
     try {
@@ -195,8 +231,16 @@
     else if (state.view === "deck") html = renderDeck();
     else if (state.view === "builder") html = renderBuilder();
     else html = renderSources();
-    app.innerHTML = html + renderToast();
+    app.innerHTML = html + (state.view === "builder" && state.showDrafts ? renderDraftsModal() : "") + renderToast();
     attachHandlers();
+    if (pendingFocus) {
+      const target = [...app.querySelectorAll(".chapter-slide")].find(
+        (el) => el.dataset.chapter === pendingFocus.chapterId && Number(el.dataset.slideIndex) === pendingFocus.index);
+      if (target) target.focus();
+      pendingFocus = null;
+    }
+    const modal = app.querySelector(".modal");
+    if (modal && !modal.contains(document.activeElement)) modal.focus();
   }
 
   function renderToast() {
@@ -299,6 +343,7 @@
         </div>
         <div class="sidebar-bottom">
           <div class="divider"></div>
+          <a href="#" class="link-row" data-action="openSavedDecks">${ICON.folder} Saved decks</a>
           <a href="#" class="link-row" data-action="goto" data-view="sources">${ICON.plus} Manage sources</a>
         </div>
       </div>
@@ -367,9 +412,9 @@
 
   function renderBuilder() {
     const resultsHtml = state.builderResults.map((r, i) => `
-      <div class="source-card" draggable="true" data-action="dragSource" data-source-index="${i}">
+      <div class="source-card" draggable="true" data-drag="source" data-source-index="${i}">
         ${ICON.dots}
-        <div class="mini-thumb">${r.thumb_url ? `<img src="${esc(r.thumb_url)}" alt="">` : ""}</div>
+        <div class="mini-thumb">${r.thumb_url ? `<img src="${esc(r.thumb_url)}" alt="" draggable="false">` : ""}</div>
         <div class="info">
           <div class="t">${esc(r.title)}</div>
           <div class="d">${esc(r.deck_title)}</div>
@@ -379,16 +424,18 @@
 
     const chaptersHtml = state.builder.chapters.map((ch) => {
       const slidesHtml = ch.slides.map((s, i) => `
-        <div class="chapter-slide">
-          <div class="thumb">${s.thumb_url ? `<img src="${esc(s.thumb_url)}" alt="">` : ""}</div>
+        <div class="chapter-slide ${s.missing ? "is-missing" : ""}" draggable="true" data-drag="slide" data-chapter="${ch.id}" data-slide-index="${i}" tabindex="0"
+             title="${esc(s.missing ? "No longer in the library: " + s.title : s.title)}"
+             aria-label="${esc(s.title)}, slide ${i + 1} of ${ch.slides.length} in ${esc(ch.name)}${s.missing ? ", missing from library" : ""}. Alt plus arrow keys moves it.">
+          <div class="thumb">${s.missing ? `<span class="missing-label">Missing</span>` : (s.thumb_url ? `<img src="${esc(s.thumb_url)}" alt="" draggable="false">` : "")}</div>
           <button type="button" class="remove" data-action="removeChapterSlide" data-chapter="${ch.id}" data-slide-index="${i}" aria-label="Remove slide">${ICON.xSmall}</button>
           <div class="t">${esc(s.title)}</div>
         </div>`).join("");
-      return `<div class="chapter" data-action="chapterDropZone" data-chapter="${ch.id}">
+      return `<div class="chapter" data-drop="chapter" data-chapter="${ch.id}">
         <div class="chapter-head">
           <div class="left">
-            ${ICON.dots}
-            <input class="chapter-name" value="${esc(ch.name)}" data-bind="chapterName" data-chapter="${ch.id}" style="width:${Math.max(6, ch.name.length)}ch">
+            <span class="chapter-grip" draggable="true" data-drag="chapter" data-chapter="${ch.id}" title="Drag to reorder chapter">${ICON.dots}</span>
+            <input class="chapter-name" value="${esc(ch.name)}" data-bind="chapterName" data-chapter="${ch.id}" aria-label="Chapter name" style="width:${Math.max(6, ch.name.length)}ch">
             <span class="chapter-count">${ch.slides.length}</span>
           </div>
           <button type="button" aria-label="Remove chapter" style="color:var(--text-tertiary);padding:4px;" data-action="removeChapter" data-chapter="${ch.id}">${ICON.x}</button>
@@ -397,7 +444,8 @@
       </div>`;
     }).join("");
 
-    const totalSlides = state.builder.chapters.reduce((n, c) => n + c.slides.length, 0);
+    const totalSlides = builderSlideCount();
+    const st = builderStatus();
 
     return `<div class="builder-topbar">
       <div class="row">
@@ -407,10 +455,14 @@
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           ${themeToggleButton()}
+          <button type="button" class="btn btn-secondary btn-sm" data-action="newDeck">${ICON.plus} New</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="openSavedDecks">${ICON.folder} Open</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="saveDraft" ${state.saving ? "disabled" : ""}>${ICON.save} Save</button>
           <button type="button" class="btn btn-primary" data-action="exportDeck">${ICON.download} Export to PowerPoint</button>
         </div>
       </div>
-      <span class="builder-summary">${state.builder.chapters.length} chapter${state.builder.chapters.length === 1 ? "" : "s"} · ${totalSlides} slide${totalSlides === 1 ? "" : "s"} so far ·
+      <span class="builder-summary"><span id="saveStatus" class="save-status ${st.cls}">${st.text}</span> ·
+        ${state.builder.chapters.length} chapter${state.builder.chapters.length === 1 ? "" : "s"} · ${totalSlides} slide${totalSlides === 1 ? "" : "s"} so far ·
         <label style="cursor:pointer;"><input type="checkbox" data-bind="addDividers" ${state.builder.addDividers ? "checked" : ""} style="vertical-align:-2px;"> chapter divider slides</label>
       </span>
     </div>
@@ -424,12 +476,30 @@
         <div class="list">${resultsHtml || `<div style="font-size:12.5px;color:var(--text-secondary);padding:8px 2px;">Search to find slides from your indexed decks.</div>`}</div>
       </div>
       <div class="canvas">
-        <div class="hint">Drag a slide from the left into a chapter below — or add a chapter first, then drag slides in.</div>
+        <div class="hint">Drag slides in from the left, between chapters, or within a chapter to set the order — drag a chapter by its grip to reorder chapters. Keyboard: focus a slide and press Alt + arrow keys.</div>
         ${chaptersHtml}
         <div class="new-chapter-row">
           <input class="input input-sm" type="text" placeholder="New chapter name…" data-bind="newChapterName">
           <button type="button" class="btn btn-secondary btn-sm" data-action="addChapter">${ICON.plus} Add chapter</button>
         </div>
+      </div>
+    </div>`;
+  }
+
+  function renderDraftsModal() {
+    const rows = state.drafts.map((d) => `
+      <div class="draft-row ${d.id === state.builder.draftId ? "current" : ""}">
+        <div class="body">
+          <div class="name">${esc(d.name)}${d.id === state.builder.draftId ? ` <span class="tag">Open now</span>` : ""}</div>
+          <div class="meta">${d.chapter_count} chapter${d.chapter_count === 1 ? "" : "s"} · ${d.slide_count} slide${d.slide_count === 1 ? "" : "s"} · Updated ${new Date(d.updated_at).toLocaleString()}</div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" data-action="openDraft" data-id="${d.id}">Open</button>
+        <button type="button" class="icon-btn sm" data-action="deleteDraft" data-id="${d.id}" aria-label="Delete saved deck ${esc(d.name)}" style="color:var(--red-text);">${ICON.trash}</button>
+      </div>`).join("");
+    return `<div class="modal-backdrop" data-action="closeDrafts">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Saved decks" tabindex="-1">
+        <div class="modal-head"><h2>Saved decks</h2><button type="button" class="icon-btn sm" data-action="closeDrafts" aria-label="Close">${ICON.x}</button></div>
+        <div class="modal-body">${rows || `<div class="footnote">No saved decks yet — build a deck and press Save.</div>`}</div>
       </div>
     </div>`;
   }
@@ -522,26 +592,91 @@
       if (evt === "input") el.addEventListener("keydown", (e) => { if (e.key === "Enter") el.blur(); });
     });
 
-    app.querySelectorAll('[data-action="dragSource"]').forEach((el) => {
-      el.addEventListener("dragstart", (e) => {
-        const idx = Number(el.dataset.sourceIndex);
-        state.dragging = state.builderResults[idx];
-        e.dataTransfer.effectAllowed = "copy";
-      });
+    app.querySelectorAll("[data-drag]").forEach((el) => {
+      el.addEventListener("dragstart", (e) => onDragStart(e, el));
+      el.addEventListener("dragend", onDragEnd);
     });
-    app.querySelectorAll('[data-action="chapterDropZone"]').forEach((el) => {
-      el.addEventListener("dragover", (e) => { e.preventDefault(); el.classList.add("drag-over"); });
-      el.addEventListener("dragleave", () => el.classList.remove("drag-over"));
-      el.addEventListener("drop", (e) => {
-        e.preventDefault();
-        el.classList.remove("drag-over");
-        if (state.dragging) {
-          addSlideToChapter(el.dataset.chapter, state.dragging);
-          state.dragging = null;
-          render();
-        }
-      });
+    app.querySelectorAll('[data-drop="chapter"]').forEach((el) => {
+      el.addEventListener("dragover", (e) => onDragOver(e, el));
+      el.addEventListener("dragleave", (e) => { if (!el.contains(e.relatedTarget)) { clearDropIndicators(); state.dropTarget = null; } });
+      el.addEventListener("drop", (e) => { e.preventDefault(); applyDrop(); });
     });
+  }
+
+  // ------------------------------------------------------- drag and drop --
+  // Dragging never re-renders (that would cancel the drag): indicators are
+  // toggled as CSS classes, the drop target is remembered in state.dropTarget
+  // and the model change + render happen once, on drop.
+  function onDragStart(e, el) {
+    const kind = el.dataset.drag;
+    if (kind === "source") state.dragging = { kind, slide: state.builderResults[Number(el.dataset.sourceIndex)] };
+    else if (kind === "slide") state.dragging = { kind, chapterId: el.dataset.chapter, index: Number(el.dataset.slideIndex) };
+    else state.dragging = { kind: "chapter", chapterId: el.dataset.chapter };
+    e.dataTransfer.effectAllowed = kind === "source" ? "copy" : "move";
+    e.dataTransfer.setData("text/plain", "slide-library"); // Firefox won't start a drag without data
+    const visual = kind === "chapter" ? el.closest(".chapter") : el;
+    if (kind === "chapter") e.dataTransfer.setDragImage(visual, 16, 16);
+    setTimeout(() => visual.classList.add("dragging"), 0); // after the drag image is captured
+  }
+
+  function onDragEnd() {
+    state.dragging = null;
+    state.dropTarget = null;
+    clearDropIndicators();
+    document.querySelectorAll(".dragging").forEach((n) => n.classList.remove("dragging"));
+  }
+
+  function clearDropIndicators() {
+    document.querySelectorAll(".drop-before, .drop-after, .drag-over").forEach((n) => n.classList.remove("drop-before", "drop-after", "drag-over"));
+  }
+
+  function onDragOver(e, chapterEl) {
+    const d = state.dragging;
+    if (!d) return;
+    e.preventDefault();
+    clearDropIndicators();
+    const chapters = state.builder.chapters;
+    const chapterId = chapterEl.dataset.chapter;
+
+    if (d.kind === "chapter") {
+      const r = chapterEl.getBoundingClientRect();
+      const after = e.clientY > r.top + r.height / 2;
+      state.dropTarget = { kind: "chapter", slot: chapters.findIndex((c) => c.id === chapterId) + (after ? 1 : 0) };
+      chapterEl.classList.add(after ? "drop-after" : "drop-before");
+      return;
+    }
+
+    const slideEl = e.target.closest ? e.target.closest(".chapter-slide") : null;
+    if (slideEl && chapterEl.contains(slideEl)) {
+      const r = slideEl.getBoundingClientRect();
+      const after = e.clientX > r.left + r.width / 2;
+      state.dropTarget = { kind: "slide", chapterId, slot: Number(slideEl.dataset.slideIndex) + (after ? 1 : 0) };
+      slideEl.classList.add(after ? "drop-after" : "drop-before");
+    } else {
+      const ch = chapters.find((c) => c.id === chapterId);
+      state.dropTarget = { kind: "slide", chapterId, slot: ch ? ch.slides.length : 0 };
+      chapterEl.classList.add("drag-over");
+    }
+  }
+
+  function applyDrop() {
+    const d = state.dragging;
+    const t = state.dropTarget;
+    state.dragging = null;
+    state.dropTarget = null;
+    if (!d || !t) { render(); return; }
+    const chapters = state.builder.chapters;
+    let changed = false;
+    if (d.kind === "chapter" && t.kind === "chapter") {
+      changed = BuilderModel.moveChapter(chapters, d.chapterId, t.slot);
+    } else if (d.kind === "slide" && t.kind === "slide") {
+      pendingFocus = BuilderModel.moveSlide(chapters, { chapterId: d.chapterId, index: d.index }, { chapterId: t.chapterId, slot: t.slot });
+      changed = !!pendingFocus;
+    } else if (d.kind === "source" && t.kind === "slide" && d.slide) {
+      changed = !!BuilderModel.insertSlide(chapters, t.chapterId, t.slot, slideRef(d.slide));
+    }
+    if (changed) saveBuilder();
+    render();
   }
 
   function onBind(name, e, el) {
@@ -653,6 +788,16 @@
     }
 
     if (action === "exportDeck") return doExport();
+    if (action === "saveDraft") return saveDraft();
+    if (action === "newDeck") return newDeck();
+    if (action === "openSavedDecks") return openSavedDecks();
+    if (action === "closeDrafts") {
+      if (e.target !== el && el.classList.contains("modal-backdrop")) return; // click landed inside the dialog
+      state.showDrafts = false;
+      return render();
+    }
+    if (action === "openDraft") return openDraft(Number(el.dataset.id));
+    if (action === "deleteDraft") return deleteDraft(Number(el.dataset.id));
 
     if (action === "toggleSourceForm") { state.showSourceForm = !state.showSourceForm; return render(); }
 
@@ -710,6 +855,105 @@
     }
   }
 
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s" && state.view === "builder") {
+      e.preventDefault();
+      saveDraft();
+      return;
+    }
+    if (e.key === "Escape" && state.showDrafts) { state.showDrafts = false; render(); return; }
+    const slideEl = e.altKey && e.target.closest ? e.target.closest(".chapter-slide") : null;
+    const direction = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" }[e.key];
+    if (!slideEl || !direction) return;
+    e.preventDefault();
+    const pos = BuilderModel.stepSlide(state.builder.chapters, { chapterId: slideEl.dataset.chapter, index: Number(slideEl.dataset.slideIndex) }, direction);
+    if (pos) { pendingFocus = pos; saveBuilder(); render(); }
+  });
+
+  // ------------------------------------------------------- saved decks --
+  function hasUnsavedWork() {
+    return state.builder.dirty && (state.builder.chapters.length > 0);
+  }
+  function confirmDiscard() {
+    return !hasUnsavedWork() || confirm(`Discard unsaved changes to “${state.builder.title || "Untitled deck"}”?`);
+  }
+
+  async function saveDraft() {
+    if (state.saving) return;
+    const b = state.builder;
+    const body = JSON.stringify({
+      name: (b.title || "").trim() || "Untitled deck",
+      add_dividers: b.addDividers,
+      chapters: b.chapters.map((c) => ({
+        id: c.id,
+        name: c.name,
+        slides: c.slides.map((s) => ({ file_id: s.file_id, slide_index: s.slide_index, title: s.title, deck_title: s.deck_title })),
+      })),
+    });
+    state.saving = true;
+    render();
+    try {
+      let saved = null;
+      if (b.draftId) {
+        try { saved = await api(`/api/drafts/${b.draftId}`, { method: "PUT", body }); }
+        catch (err) { if (err.status !== 404) throw err; /* deleted elsewhere: save as a new deck */ }
+      }
+      if (!saved) saved = await api("/api/drafts", { method: "POST", body });
+      b.draftId = saved.id;
+      b.savedAt = saved.updated_at;
+      b.dirty = false;
+      saveBuilder(false);
+      state.saving = false;
+      showToast(`Saved “${saved.name}”.`);
+    } catch (err) {
+      state.saving = false;
+      showToast(String(err.message || err), "error");
+    }
+  }
+
+  async function openSavedDecks() {
+    try { state.drafts = await api("/api/drafts"); }
+    catch (err) { showToast(String(err.message || err), "error"); return; }
+    state.view = "builder";
+    state.showDrafts = true;
+    render();
+  }
+
+  async function openDraft(id) {
+    if (id !== state.builder.draftId && !confirmDiscard()) return;
+    try {
+      const d = await api(`/api/drafts/${id}`);
+      state.builder = { title: d.name, addDividers: d.add_dividers, chapters: d.chapters, draftId: d.id, dirty: false, savedAt: d.updated_at };
+      saveBuilder(false);
+      state.showDrafts = false;
+      const missing = d.chapters.reduce((n, c) => n + c.slides.filter((s) => s.missing).length, 0);
+      render();
+      if (missing) showToast(`${missing} slide${missing === 1 ? " is" : "s are"} no longer in the library (shown as Missing; skipped on export).`, "error");
+    } catch (err) {
+      showToast(String(err.message || err), "error");
+    }
+  }
+
+  async function deleteDraft(id) {
+    const d = state.drafts.find((x) => x.id === id);
+    if (!confirm(`Delete saved deck “${d ? d.name : id}”? This can't be undone.`)) return;
+    try {
+      await api(`/api/drafts/${id}`, { method: "DELETE" });
+      state.drafts = state.drafts.filter((x) => x.id !== id);
+      if (state.builder.draftId === id) { state.builder.draftId = null; saveBuilder(); }
+      render();
+    } catch (err) {
+      showToast(String(err.message || err), "error");
+    }
+  }
+
+  function newDeck() {
+    if (!confirmDiscard()) return;
+    state.builder = emptyBuilder();
+    saveBuilder(false);
+    render();
+  }
+
   async function doExport() {
     if (state.builder.chapters.every((c) => c.slides.length === 0)) {
       showToast("Add at least one slide before exporting.", "error");
@@ -742,7 +986,9 @@
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      showToast("Downloaded " + a.download + " — native slides came in editable, PDF-sourced slides as images.");
+      const missing = state.builder.chapters.reduce((n, c) => n + c.slides.filter((s) => s.missing).length, 0);
+      showToast("Downloaded " + a.download + " — native slides came in editable, PDF-sourced slides as images." +
+        (missing ? ` ${missing} missing slide${missing === 1 ? " was" : "s were"} skipped.` : ""));
     } catch (err) {
       showToast(String(err.message || err), "error");
     }

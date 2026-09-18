@@ -109,6 +109,27 @@ browser; close the terminal (or Ctrl+C) to stop it. Your index and
 thumbnails persist in `data/` between runs — nothing needs reindexing
 unless the files themselves changed.
 
+## Building and saving decks
+
+In the **Builder**, drag slides from the search results into a chapter — drop
+on a slide to insert before/after it, or on the chapter's empty area to
+append. Drag slides already in the deck to change their order within a
+chapter or to move them into another chapter, and drag a chapter by its grip
+(⠿) to reorder chapters. Keyboard: focus a slide and press **Alt + ←/→** to
+move it within its chapter, **Alt + ↑/↓** to send it to the previous/next
+chapter.
+
+**Save** (or Ctrl/Cmd+S) stores the deck server-side in `data/library.db`;
+**Open** lists your saved decks so you can pick up where you left off, and
+**New** starts a blank one. The status next to the title shows *Saved*,
+*Unsaved changes* or *Not saved yet*. Between saves, the Builder keeps a
+working copy in your browser, so a reload never loses edits.
+
+A saved deck stores *references* to library slides, not copies. Opening it
+always shows the current thumbnails and titles; if a slide's source file was
+removed or shortened since, that slide appears as **Missing** and is skipped
+on export (the rest of the deck is unaffected).
+
 ## What to know about fidelity
 
 - **PDF-sourced slides always export as an image.** There's no reliable
@@ -141,7 +162,8 @@ proxy), set `SLIDELIB_ALLOWED_HOSTS=name1,name2`.
 
 ```
 pip install -r requirements-dev.txt
-python -m pytest
+python -m pytest                    # backend
+node --test tests/js/*.test.js      # Builder reorder logic (Node 18+, no npm install)
 ```
 Tests use throwaway databases and never touch `data/`; LibreOffice is stubbed
 so they run without it.
@@ -155,8 +177,11 @@ app/            FastAPI backend
   indexer.py      Walks folders, extracts text, renders thumbnails
   pptx_copy.py    Low-level native slide copy (OOXML)
   exporter.py     Builds the exported .pptx from chapters
-tests/          pytest suite (db, pptx copy, exporter, API)
+  drafts.py       Resolves saved Builder decks against the live index
+  folder_picker.py  Native folder dialog, run out-of-process
+tests/          pytest suite (db, pptx copy, exporter, API, drafts) + tests/js
 static/         Frontend (no build step — plain HTML/CSS/JS)
+  builder-model.js  Pure chapter/slide reorder logic (unit-tested)
 scripts/        make_samples.py — generates a try-it-now sample library
 data/           Created at runtime: library.db + thumbnails/ (gitignored)
 ```
