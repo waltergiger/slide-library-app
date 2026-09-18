@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+data/library.db
+data/thumbnails/
+.pytest_cache/
+sample-library/
+.DS_Store
