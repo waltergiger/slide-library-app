@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS drafts (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS slides_fts USING fts5(
     title, body_text, content='slides', content_rowid='id'
 );
@@ -123,6 +128,23 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "category" not in draft_cols:
         conn.execute("ALTER TABLE drafts ADD COLUMN category TEXT")
         conn.commit()
+
+
+# ---- settings ---------------------------------------------------------------
+
+def get_setting(key: str, default: str = "") -> str:
+    row = get_conn().execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    conn.commit()
 
 
 # ---- sources -----------------------------------------------------------

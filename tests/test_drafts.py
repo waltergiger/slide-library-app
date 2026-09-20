@@ -1,4 +1,5 @@
 import io
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -120,6 +121,15 @@ def test_patch_validation_and_errors(client):
     assert client.patch(f"/api/drafts/{d['id']}", json={}).status_code == 200  # no-op
     assert client.patch(f"/api/drafts/{d['id']}", json={"name": "x"},
                         headers={"origin": "https://evil.example.com"}).status_code == 403
+
+
+def test_saved_draft_is_snapshotted_to_configured_folder(client, tmp_path):
+    folder = tmp_path / "drafts"
+    assert client.put("/api/settings", json={"drafts_path": str(folder)}).status_code == 200
+    created = client.post("/api/drafts", json={"name": "Board plan", "chapters": []}).json()
+    snapshot = folder / f"Board plan-{created['id']}.json"
+    assert snapshot.is_file()
+    assert json.loads(snapshot.read_text()) ["name"] == "Board plan"
 
 
 def test_migration_adds_category_to_existing_drafts_table(tmp_db):

@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, drafts, exporter, file_opener, folder_picker, indexer, renderers
+from . import db, drafts, exporter, file_opener, file_picker, folder_picker, indexer, renderers, settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -149,6 +149,16 @@ def api_browse_folder():
                 f"Couldn't open a folder picker on this machine ({exc}). "
                 "Type or paste the folder path directly instead.",
             ) from exc
+    return {"path": path}
+
+
+@app.post("/api/browse-file")
+def api_browse_file():
+    with _browse_lock:
+        try:
+            path = file_picker.pick_file()
+        except file_picker.PickerUnavailable as exc:
+            raise HTTPException(400, f"Couldn't open a file picker ({exc}). Type or paste the path instead.") from exc
     return {"path": path}
 
 
@@ -303,6 +313,7 @@ class ExportIn(BaseModel):
     filename: str = "New Deck.pptx"
     add_dividers: bool = True
     chapters: list[Chapter]
+    template_path: str | None = None
 
 
 @app.post("/api/export")
@@ -312,7 +323,10 @@ def api_export(body: ExportIn):
         for c in body.chapters
     ]
     try:
-        data = exporter.build_deck(chapters, add_dividers=body.add_dividers)
+        template_path = body.template_path if body.template_path is not None else settings.get()["template_path"]
+        if template_path:
+            template_path = settings.validate_template_path(template_path)
+        data = exporter.build_deck(chapters, add_dividers=body.add_dividers, template_path=template_path or None)
     except Exception as exc:  # noqa: BLE001
         log.getChild("export").exception("export failed")
         raise HTTPException(500, f"Export failed: {exc}") from exc
@@ -357,6 +371,24 @@ class DraftMetaIn(BaseModel):
     category: str | None = Field(default=None, max_length=60)
 
 
+class SettingsIn(BaseModel):
+    template_path: str | None = None
+    drafts_path: str | None = None
+
+
+@app.get("/api/settings")
+def api_get_settings():
+    return settings.get()
+
+
+@app.put("/api/settings")
+def api_update_settings(body: SettingsIn):
+    try:
+        return settings.update(body.template_path, body.drafts_path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 def _draft_content(body: DraftIn) -> dict:
     return {"add_dividers": body.add_dividers, "chapters": [c.model_dump() for c in body.chapters]}
 
@@ -377,7 +409,9 @@ def api_list_drafts():
 @app.post("/api/drafts")
 def api_create_draft(body: DraftIn):
     draft_id = db.create_draft(_draft_name(body), _draft_content(body), _category(body.category))
-    return drafts.summarize(db.get_draft(draft_id))
+    draft = db.get_draft(draft_id)
+    settings.persist_draft(draft)
+    return drafts.summarize(draft)
 
 
 @app.get("/api/drafts/{draft_id}")
@@ -392,7 +426,9 @@ def api_get_draft(draft_id: int):
 def api_update_draft(draft_id: int, body: DraftIn):
     if not db.update_draft(draft_id, _draft_name(body), _draft_content(body), _category(body.category)):
         raise HTTPException(404, "saved deck not found")
-    return drafts.summarize(db.get_draft(draft_id))
+    draft = db.get_draft(draft_id)
+    settings.persist_draft(draft)
+    return drafts.summarize(draft)
 
 
 @app.patch("/api/drafts/{draft_id}")
@@ -406,7 +442,9 @@ def api_patch_draft(draft_id: int, body: DraftMetaIn):
     )
     if not ok:
         raise HTTPException(404, "saved deck not found")
-    return drafts.summarize(db.get_draft(draft_id))
+    draft = db.get_draft(draft_id)
+    settings.persist_draft(draft)
+    return drafts.summarize(draft)
 
 
 @app.delete("/api/drafts/{draft_id}")

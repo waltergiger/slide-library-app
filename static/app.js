@@ -27,10 +27,14 @@
     save: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>`,
     pencil: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`,
     layers: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 10 5-10 5L2 7Z"/><path d="m2 17 10 5 10-5M2 12l10 5 10-5"/></svg>`,
+    settings: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="m19.4 15 .1.1a2 2 0 0 1-2.8 2.8l-.1-.1a2 2 0 0 0-3.4 1.4v.2a2 2 0 0 1-4 0v-.2a2 2 0 0 0-3.4-1.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A2 2 0 0 0 1.6 12a2 2 0 0 1 2-2h.2a2 2 0 0 0 1.4-3.4l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A2 2 0 0 0 11.4 4h.2a2 2 0 0 1 2 2v.2A2 2 0 0 0 17 7.6l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A2 2 0 0 0 19.4 15Z"/></svg>`,
     starFill: `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.7 5.9 6.3.7-4.7 4.4 1.3 6.2L12 17.3 6.4 20.2l1.3-6.2-4.7-4.4 6.3-.7Z"/></svg>`,
+    grid: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>`,
+    list: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
   };
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const APP_VERSION = "0.1.0";
 
   // ---------------------------------------------------------------- state --
   const BUILDER_KEY = "slidelib-builder";
@@ -38,6 +42,7 @@
   const PANEL_KEY = "slidelib-panel";
   const ZOOM_KEY = "slidelib-zoom";
   const PANEL_W_KEY = "slidelib-panel-width";
+  const LIBRARY_VIEW_KEY = "slidelib-library-view";
 
   const readPref = (key) => { try { return localStorage.getItem(key); } catch (e) { return null; } };
   const writePref = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (e) { /* per-viewer convenience only */ } };
@@ -77,6 +82,10 @@
     currentDeck: null,
     slideSelection: new Set(),
     sources: [],
+    settings: { template_path: "", drafts_path: "" },
+    settingsForm: { template_path: "", drafts_path: "" },
+    settingsSaving: false,
+    settingsBrowsing: false,
     showSourceForm: false,
     sourceForm: { path: "", domain: "" },
     browsing: false,
@@ -88,6 +97,7 @@
     recheckingRenderers: false,
     zoom: ViewModel.normalizeZoom(readPref(ZOOM_KEY)),
     panelWidth: ViewModel.clampPanelWidth(readPref(PANEL_W_KEY), window.innerWidth),
+      libraryView: readPref(LIBRARY_VIEW_KEY) === "list" ? "list" : "grid",
     dragging: null,
     dropTarget: null,
     showDrafts: false,
@@ -139,6 +149,10 @@
   async function refreshDrafts() { state.drafts = await api("/api/drafts"); }
   async function refreshRenderers() { state.renderers = await api("/api/renderers"); }
   async function refreshSources() { state.sources = await api("/api/sources"); }
+  async function refreshSettings() {
+    state.settings = await api("/api/settings");
+    state.settingsForm = { ...state.settings };
+  }
   async function loadDeck(id) {
     state.currentDeck = await api(`/api/decks/${id}`);
     state.slideSelection = new Set();
@@ -183,6 +197,19 @@
     state.zoom = next;
     writePref(ZOOM_KEY, next);
     render();
+  }
+
+  function setLibraryView(view) {
+    state.libraryView = view === "list" ? "list" : "grid";
+    writePref(LIBRARY_VIEW_KEY, state.libraryView);
+    render();
+  }
+
+  function libraryViewToggle() {
+    return `<div class="view-toggle" role="group" aria-label="Library view">
+      <button type="button" class="view-toggle-btn ${state.libraryView === "grid" ? "active" : ""}" data-action="setLibraryView" data-view="grid" aria-label="Icon view" aria-pressed="${state.libraryView === "grid"}" title="Icon view">${ICON.grid}</button>
+      <button type="button" class="view-toggle-btn ${state.libraryView === "list" ? "active" : ""}" data-action="setLibraryView" data-view="list" aria-label="List view" aria-pressed="${state.libraryView === "list"}" title="List view">${ICON.list}</button>
+    </div>`;
   }
 
   function zoomControl() {
@@ -345,8 +372,9 @@
     let html;
     if (state.view === "library") html = renderLibrary();
     else if (state.view === "deck") html = renderDeck();
-    else html = renderSources();
-    const withDecks = state.view !== "sources";
+    else if (state.view === "sources") html = renderSources();
+    else html = renderSettings();
+    const withDecks = state.view === "library" || state.view === "deck";
     app.innerHTML = html
       + (withDecks ? `<datalist id="categoryOptions">${categoriesOf().map((c) => `<option value="${esc(c)}">`).join("")}</datalist>` : "")
       + (withDecks && state.showDrafts ? renderDraftsModal() : "")
@@ -418,7 +446,7 @@
           : (state.query ? `No decks match "${esc(state.query)}".` : "No decks indexed yet — add a source directory to get started."));
 
     const decksBody = visibleDecks.length
-      ? `<div class="deck-grid">${decksHtml}</div>`
+      ? `<div class="deck-grid ${state.libraryView === "list" ? "list-view" : ""}">${decksHtml}</div>`
       : `<div class="empty-state">${ICON.search}<span style="font-size:14.5px;">${state.decks === null ? "Loading…" : emptyMessage}</span></div>`;
 
     // Slide-level hits for a text search: these are what can be dragged into the deck panel.
@@ -458,7 +486,7 @@
   function renderSlideGroup(label, items) {
     return `<section class="fav-group">
       <div class="fav-group-head"><span class="tag">${esc(label)}</span><span class="count">${items.length} slide${items.length === 1 ? "" : "s"}</span></div>
-      <div class="fav-grid">${items.map(renderSlideTile).join("")}</div>
+      <div class="fav-grid ${state.libraryView === "list" ? "list-view" : ""}">${items.map(renderSlideTile).join("")}</div>
     </section>`;
   }
 
@@ -482,6 +510,7 @@
         <div>
           <div class="brand"><div class="brand-mark">S</div><span class="brand-name">Slide Library</span></div>
           <div class="brand-caption">Presentation repository</div>
+          <div class="brand-version">v${APP_VERSION}</div>
         </div>
         <div>
           <div class="nav-label">Domains</div>
@@ -489,12 +518,15 @@
         </div>
         <div class="sidebar-bottom">
           <div class="divider"></div>
-          <a href="#" class="link-row" data-action="openSavedDecks">${ICON.folder} Saved decks</a>
-          <a href="#" class="link-row" data-action="goto" data-view="sources">${ICON.plus} Manage sources</a>
         </div>
       </div>
       <div class="main">
         ${renderRendererBanner()}
+        <nav class="top-links" aria-label="Library navigation">
+          <a href="#" class="top-link" data-action="openSavedDecks">${ICON.folder} Saved decks</a>
+          <a href="#" class="top-link" data-action="goto" data-view="sources">${ICON.plus} Manage sources</a>
+          <a href="#" class="top-link" data-action="goto" data-view="settings">${ICON.settings} Settings</a>
+        </nav>
         <div class="top-row">
           <div class="search-wrap" style="flex-grow:1;max-width:420px;">
             ${ICON.search.replace("<svg", '<svg class="search-icon"')}
@@ -502,6 +534,7 @@
             <input id="librarySearch" class="input" type="text" placeholder="Search decks, slides, or text inside slides…" value="${esc(state.query)}" data-bind="query">
           </div>
           <div class="actions">
+            ${libraryViewToggle()}
             ${zoomControl()}
             ${themeToggleButton()}
             ${panelToggleButton()}
@@ -869,6 +902,44 @@
     </div>`;
   }
 
+  function renderSettings() {
+    const f = state.settingsForm;
+    return `<div class="settings-page">
+      <div class="settings-header">
+        <a href="#" class="back-link" data-action="goto" data-view="library">${ICON.chevronLeft} Back to library</a>
+        <div class="row">
+          <div><h1>Settings</h1><p>Choose the PowerPoint design used for exports and where saved Builder decks are kept.</p></div>
+          ${themeToggleButton()}
+        </div>
+      </div>
+      <div class="settings-list">
+        <section class="settings-section">
+          <div class="settings-section-head"><div><h2>PowerPoint export template</h2><p>New exports start from this file. Leave it empty to use the standard blank presentation.</p></div></div>
+          <div class="field">
+            <label for="templatePath">Template file</label>
+            <div class="settings-path-row">
+              <input id="templatePath" class="input" type="text" placeholder="/Users/name/Templates/brand.potx" value="${esc(f.template_path)}" data-bind="templatePath">
+              <button type="button" class="btn btn-secondary btn-sm" data-action="browseTemplate" ${state.settingsBrowsing ? "disabled" : ""}>${ICON.folder} ${state.settingsBrowsing ? "Waiting…" : "Browse…"}</button>
+            </div>
+            <div class="settings-note">Supported files: .pptx and .potx. The template’s slide size and layouts are retained; its starter slides are removed.</div>
+          </div>
+        </section>
+        <section class="settings-section">
+          <div class="settings-section-head"><div><h2>Saved Builder decks</h2><p>Each saved deck is also written as a JSON snapshot here, so it can be expanded or backed up outside the app.</p></div></div>
+          <div class="field">
+            <label for="draftsPath">Drafts folder</label>
+            <div class="settings-path-row">
+              <input id="draftsPath" class="input" type="text" placeholder="/Users/name/Slide Library/drafts" value="${esc(f.drafts_path)}" data-bind="draftsPath">
+              <button type="button" class="btn btn-secondary btn-sm" data-action="browseDraftsFolder">${ICON.folder} Browse…</button>
+            </div>
+            <div class="settings-note">Existing drafts remain available in the app database. New saves and renames update a file named after the deck.</div>
+          </div>
+        </section>
+        <div class="settings-actions"><button type="button" class="btn btn-primary" data-action="saveSettings" ${state.settingsSaving ? "disabled" : ""}>${ICON.save} ${state.settingsSaving ? "Saving…" : "Save settings"}</button></div>
+      </div>
+    </div>`;
+  }
+
   // ---------------------------------------------------------- interaction --
   function attachHandlers() {
     const app = document.getElementById("app");
@@ -1014,6 +1085,8 @@
       if (ch) { ch.name = v; saveBuilder(); }
     } else if (name === "sourcePath") { state.sourceForm.path = v; }
     else if (name === "sourceDomain") { state.sourceForm.domain = v; }
+    else if (name === "templatePath") { state.settingsForm.template_path = v; }
+    else if (name === "draftsPath") { state.settingsForm.drafts_path = v; }
     else if (name.startsWith("filter-")) {
       const key = name.slice("filter-".length);
       state.filters[key] = v;
@@ -1042,12 +1115,14 @@
     e.preventDefault();
 
     if (action === "toggleTheme") return toggleTheme();
+    if (action === "setLibraryView") return setLibraryView(el.dataset.view);
     if (action === "dismissToast") { state.toast = null; return render(); }
 
     if (action === "goto") {
       state.view = el.dataset.view;
       if (state.view === "library") { await Promise.all([refreshDomains(), refreshDecks()]); }
       if (state.view === "sources") { await refreshSources(); ensureSourcesPolling(); }
+      if (state.view === "settings") { await refreshSettings(); }
       return render();
     }
 
@@ -1144,6 +1219,9 @@
     if (action === "toggleSourceForm") { state.showSourceForm = !state.showSourceForm; return render(); }
 
     if (action === "browseFolder") return browseFolder();
+    if (action === "browseTemplate") return browseTemplate();
+    if (action === "browseDraftsFolder") return browseDraftsFolder();
+    if (action === "saveSettings") return saveSettings();
 
     if (action === "submitSource") return submitSource();
 
@@ -1181,6 +1259,38 @@
       state.browsing = false;
       render();
     }
+  }
+
+  async function browseTemplate() {
+    state.settingsBrowsing = true;
+    render();
+    try {
+      const { path } = await api("/api/browse-file", { method: "POST" });
+      if (path) state.settingsForm.template_path = path;
+    } catch (err) { showToast(String(err.message || err), "error"); }
+    finally { state.settingsBrowsing = false; render(); }
+  }
+
+  async function browseDraftsFolder() {
+    state.settingsBrowsing = true;
+    render();
+    try {
+      const { path } = await api("/api/browse-folder", { method: "POST" });
+      if (path) state.settingsForm.drafts_path = path;
+    } catch (err) { showToast(String(err.message || err), "error"); }
+    finally { state.settingsBrowsing = false; render(); }
+  }
+
+  async function saveSettings() {
+    if (state.settingsSaving) return;
+    state.settingsSaving = true;
+    render();
+    try {
+      state.settings = await api("/api/settings", { method: "PUT", body: JSON.stringify(state.settingsForm) });
+      state.settingsForm = { ...state.settings };
+      showToast("Settings saved.");
+    } catch (err) { showToast(String(err.message || err), "error"); }
+    finally { state.settingsSaving = false; render(); }
   }
 
   async function submitSource() {
@@ -1411,7 +1521,7 @@
     applyLayout();
     document.getElementById("app").innerHTML = `<div style="padding:40px;color:var(--text-secondary);">Loading your library…</div>`;
     try {
-      await Promise.all([refreshDomains(), refreshDecks(), refreshSources(), refreshDrafts().catch(() => {}),
+      await Promise.all([refreshDomains(), refreshDecks(), refreshSources(), refreshSettings(), refreshDrafts().catch(() => {}),
         refreshRenderers().catch(() => {})]);
     } catch (err) {
       document.getElementById("app").innerHTML = `<div style="padding:40px;color:var(--red-text);">Could not reach the server: ${esc(String(err.message || err))}</div>`;

@@ -95,6 +95,18 @@ a deck to see its slides, then drag slides (from a deck, from search hits
 or from your favorites) straight into the **deck panel** on the right, and
 **Export .pptx** when the deck is ready.
 
+### Settings: templates and saved Builder decks
+
+Open **Settings** in the sidebar to choose a `.pptx` or `.potx` PowerPoint
+template. Its slide size and layouts are used for exports, while its starter
+slides are removed. Leave the field empty to use the standard blank
+presentation.
+
+The same page lets you choose a folder for saved Builder decks. The app keeps
+drafts in SQLite for fast reopening and also writes each saved deck as a
+readable JSON snapshot in that folder, making pre-export decks easy to back up
+or extend with later tooling. The default folder is `data/drafts`.
+
 ### Opening the original file
 
 Every deck card, and the header of an open deck, shows the file's **full path

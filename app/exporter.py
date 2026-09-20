@@ -24,10 +24,15 @@ SLIDE_HEIGHT = Emu(6858000)   # 7.5 in
 ACCENT = "2B3A55"
 
 
-def build_deck(chapters: list[dict], add_dividers: bool = True) -> bytes:
-    target = Presentation()
-    target.slide_width = SLIDE_WIDTH
-    target.slide_height = SLIDE_HEIGHT
+def build_deck(chapters: list[dict], add_dividers: bool = True, template_path: str | None = None) -> bytes:
+    target = Presentation(template_path) if template_path else Presentation()
+    if template_path:
+        for slide_id in list(target.slides._sldIdLst):
+            target.part.drop_rel(slide_id.rId)
+            target.slides._sldIdLst.remove(slide_id)
+    else:
+        target.slide_width = SLIDE_WIDTH
+        target.slide_height = SLIDE_HEIGHT
     blank_layout = _pick_blank_layout(target)
 
     with indexer.PdfRenderCache() as cache:
@@ -35,7 +40,7 @@ def build_deck(chapters: list[dict], add_dividers: bool = True) -> bytes:
             name = (chapter.get("name") or "Untitled chapter").strip()
             slide_refs = chapter.get("slides", [])
             if add_dividers:
-                _add_divider(target, blank_layout, name)
+                _add_divider(target, blank_layout, name, target.slide_width, target.slide_height)
             for ref in slide_refs:
                 _add_one_slide(target, blank_layout, ref, cache)
 
@@ -78,22 +83,22 @@ def _paste_image_slide(target: Presentation, blank_layout, file_row, slide_index
         file_row["path"], file_row["ext"], slide_index, target_width_px=1920, cache=cache
     )
     slide.shapes.add_picture(
-        io.BytesIO(png_bytes), 0, 0, width=SLIDE_WIDTH, height=SLIDE_HEIGHT
+        io.BytesIO(png_bytes), 0, 0, width=target.slide_width, height=target.slide_height
     )
 
 
-def _add_divider(target: Presentation, blank_layout, name: str) -> None:
+def _add_divider(target: Presentation, blank_layout, name: str, width=SLIDE_WIDTH, height=SLIDE_HEIGHT) -> None:
     slide = target.slides.add_slide(blank_layout)
     for shape in list(slide.shapes):
         shape._element.getparent().remove(shape._element)
 
-    bg = slide.shapes.add_shape(1, 0, 0, SLIDE_WIDTH, SLIDE_HEIGHT)  # MSO_SHAPE.RECTANGLE = 1
+    bg = slide.shapes.add_shape(1, 0, 0, width, height)  # MSO_SHAPE.RECTANGLE = 1
     bg.fill.solid()
     bg.fill.fore_color.rgb = _rgb(ACCENT)
     bg.line.fill.background()
     bg.shadow.inherit = False
 
-    box = slide.shapes.add_textbox(Emu(914400), Emu(2800000), SLIDE_WIDTH - Emu(1828800), Emu(1200000))
+    box = slide.shapes.add_textbox(Emu(914400), Emu(2800000), width - Emu(1828800), Emu(1200000))
     tf = box.text_frame
     tf.word_wrap = True
     p = tf.paragraphs[0]

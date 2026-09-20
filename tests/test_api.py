@@ -75,3 +75,23 @@ def test_browse_folder_reports_unavailable_picker_as_400(client, monkeypatch):
     monkeypatch.setattr(folder_picker, "pick_folder", boom)
     r = client.post("/api/browse-folder")
     assert r.status_code == 400 and "type or paste" in r.json()["detail"].lower()
+
+
+def test_settings_validate_and_roundtrip(client, tmp_path):
+    template = tmp_path / "brand.pptx"
+    from pptx import Presentation
+    Presentation().save(template)
+    r = client.put("/api/settings", json={"template_path": str(template), "drafts_path": str(tmp_path / "drafts")})
+    assert r.status_code == 200
+    assert r.json()["template_path"] == str(template)
+    assert client.get("/api/settings").json()["drafts_path"] == str(tmp_path / "drafts")
+    assert client.put("/api/settings", json={"template_path": str(tmp_path / "missing.pptx")}).status_code == 400
+
+
+def test_browse_file_returns_path_or_null_on_cancel(client, monkeypatch):
+    from app import file_picker
+
+    monkeypatch.setattr(file_picker, "pick_file", lambda: "/Users/x/brand.potx")
+    assert client.post("/api/browse-file").json() == {"path": "/Users/x/brand.potx"}
+    monkeypatch.setattr(file_picker, "pick_file", lambda: None)
+    assert client.post("/api/browse-file").json() == {"path": None}

@@ -96,3 +96,30 @@ def test_each_source_deck_is_converted_once_per_export(library):
 def test_missing_file_row_is_skipped(library):
     data = exporter.build_deck([{"name": "C", "slides": [{"file_id": 9999, "slide_index": 0}]}], add_dividers=False)
     assert len(_reload(data).slides) == 0
+
+
+def test_template_is_used_without_retaining_its_starter_slides(library, tmp_path):
+    template = Presentation()
+    template.slide_width = 10000000
+    template.slide_height = 6000000
+    template.slides.add_slide(template.slide_layouts[6])
+    template_path = tmp_path / "brand.potx"
+    template.save(template_path)
+
+    ids, _ = library
+    data = exporter.build_deck(
+        [{"name": "C", "slides": [{"file_id": ids["pptx"], "slide_index": 0}]}],
+        add_dividers=False,
+        template_path=str(template_path),
+    )
+    result = _reload(data)
+    assert len(result.slides) == 1
+    assert (result.slide_width, result.slide_height) == (10000000, 6000000)
+
+    image_data = exporter.build_deck(
+        [{"name": "C", "slides": [{"file_id": ids["pptx"], "slide_index": 1}]}],
+        add_dividers=False,
+        template_path=str(template_path),
+    )
+    image_slide = _reload(image_data).slides[0]
+    assert image_slide.shapes[0].width == 10000000 and image_slide.shapes[0].height == 6000000
