@@ -513,6 +513,7 @@
           <div class="brand-version">v${APP_VERSION}</div>
         </div>
         <div>
+          <a href="#" class="link-row sidebar-manage-link" data-action="goto" data-view="sources">${ICON.plus} Manage sources</a>
           <div class="nav-label">Domains</div>
           ${domainsHtml}
         </div>
@@ -524,7 +525,6 @@
         ${renderRendererBanner()}
         <nav class="top-links" aria-label="Library navigation">
           <a href="#" class="top-link" data-action="openSavedDecks">${ICON.folder} Saved decks</a>
-          <a href="#" class="top-link" data-action="goto" data-view="sources">${ICON.plus} Manage sources</a>
           <a href="#" class="top-link" data-action="goto" data-view="settings">${ICON.settings} Settings</a>
         </nav>
         <div class="top-row">
