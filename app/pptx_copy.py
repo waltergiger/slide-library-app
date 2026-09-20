@@ -24,6 +24,7 @@ import io
 from pptx.oxml.ns import qn
 
 R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+_SLIDE_LAYOUT_RELTYPE = R_NS + "/slideLayout"
 _R_ATTRS = {
     qn("r:embed"), qn("r:link"), qn("r:id"), qn("r:pict"), qn("r:href"),
 }
@@ -108,11 +109,18 @@ def _copy_relationships(source_slide, new_slide) -> None:
                 image_bytes = rel.target_part.blob
                 image_part, new_rid = new_slide.part.get_or_add_image_part(io.BytesIO(image_bytes))
                 rel_map[rel_id] = new_rid
-            # Other internal relationship types (charts, embedded packages)
-            # are intentionally not copied — slides using them should have
-            # been caught by slide_has_unsupported_content() already.
-        except Exception:
-            continue
+            elif rel.reltype == _SLIDE_LAYOUT_RELTYPE:
+                continue
+            else:
+                # A relationship we do not copy leaves the source rId in the
+                # XML. PowerPoint may then show an empty icon or reject the
+                # exported package as damaged; let the exporter use its
+                # rendered-image fallback instead.
+                raise ValueError(f"unsupported slide relationship: {rel.reltype}")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"could not copy slide relationship {rel_id}") from exc
 
     if not rel_map:
         return

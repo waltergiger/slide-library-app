@@ -1,11 +1,13 @@
 import io
+from types import SimpleNamespace
 
+import pytest
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE
 from pptx.util import Inches
 
-from app.pptx_copy import _pick_blank_layout, copy_slide_native, slide_has_unsupported_content
+from app.pptx_copy import _copy_relationships, _pick_blank_layout, copy_slide_native, slide_has_unsupported_content
 from tests.conftest import png_bytes
 
 
@@ -73,3 +75,11 @@ def test_plain_table_is_supported_but_chart_is_not():
     data.add_series("s", (1, 2))
     slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(1), Inches(4), Inches(3), data)
     assert slide_has_unsupported_content(slide) is True
+
+
+def test_unknown_internal_relationship_fails_closed_instead_of_leaving_empty_content():
+    rel = SimpleNamespace(is_external=False, reltype="http://example.com/unsupported")
+    source = SimpleNamespace(part=SimpleNamespace(rels={"rId99": rel}))
+
+    with pytest.raises(ValueError, match="unsupported slide relationship"):
+        _copy_relationships(source, SimpleNamespace())
