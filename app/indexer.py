@@ -28,9 +28,9 @@ SUPPORTED_EXTS = {".pptx", ".pptm", ".pdf"}
 THUMB_MAX_WIDTH = 640
 
 
-def discover_files(root: str) -> list[Path]:
+def discover_files(root: str, recursive: bool = True) -> list[Path]:
     out = []
-    for p in Path(root).rglob("*"):
+    for p in (Path(root).rglob("*") if recursive else Path(root).iterdir()):
         if not p.is_file():
             continue
         if p.name.startswith("~$") or p.name.startswith("."):
@@ -50,7 +50,7 @@ def index_source(source_id: int) -> None:
         root = source["path"]
         if not Path(root).exists():
             raise FileNotFoundError(f"Folder not found: {root}")
-        files = discover_files(root)
+        files = discover_files(root, recursive=bool(source["recursive"]))
         db.set_source_progress(source_id, len(files), 0)
         keep_paths = set()
         for i, path in enumerate(files):
@@ -96,13 +96,13 @@ def _index_one_file(source_id: int, domain: str, path: Path) -> None:
         mtime=stat.st_mtime,
         size=stat.st_size,
     )
-    favorites = db.carry_favorites(prior, hashes)
+    favorites = db.carry_favorite_meta(prior, hashes)
     for slide in slides:
         idx = slide["index"]
         thumb = thumb_paths.get(idx)
         db.insert_slide(
             file_id, idx, slide["title"], slide["text"], thumb,
-            favorite=idx in favorites, content_hash=hashes[idx],
+            favorite=idx in favorites, content_hash=hashes[idx], meta=favorites.get(idx),
         )
     db.remove_thumbs(prior.thumbs - set(thumb_paths.values()))
 

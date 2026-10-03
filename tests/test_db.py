@@ -114,3 +114,98 @@ def test_list_favorites_filters_by_domain_and_query(tmp_db):
     assert len(db.list_favorites("All domains")) == 3
     assert [r["title"] for r in db.list_favorites(None, "wealth")] == ["Wealth"]
     assert [r["title"] for r in db.list_favorites("Architecture", "wealth")] == []
+
+
+def test_favorited_at_is_set_on_star_kept_on_restar_and_cleared_on_unstar(tmp_db):
+    sid = db.add_source("/x", "Dom")
+    fid = add_indexed_file(sid, "/x/a.pptx", [("t", "a")])
+    db.set_slide_favorite(fid, 0, True)
+    first = db.get_slide(fid, 0)["favorited_at"]
+    assert first
+    with db.get_conn() as c:
+        c.execute("UPDATE slides SET favorited_at = '2020-01-01T00:00:00+00:00'")
+    db.set_slide_favorite(fid, 0, True)
+    assert db.get_slide(fid, 0)["favorited_at"] == "2020-01-01T00:00:00+00:00"
+    db.set_slide_favorite(fid, 0, False)
+    assert db.get_slide(fid, 0)["favorited_at"] is None
+
+
+def test_normalize_tags_trims_dedupes_and_caps():
+    assert db.normalize_tags(["  Q3 ", "board   pack", "q3", "", "Board Pack"]) == ["Q3", "board pack"]
+    assert db.normalize_tags(["x" * 100]) == ["x" * db.MAX_TAG_LEN]
+    assert len(db.normalize_tags([f"t{i}" for i in range(50)])) == db.MAX_TAGS
+
+
+def test_parse_tags_tolerates_garbage():
+    assert db.parse_tags(None) == []
+    assert db.parse_tags("not json") == []
+    assert db.parse_tags('{"a": 1}') == []
+    assert db.parse_tags('["a", 3, "b"]') == ["a", "b"]
+
+
+def test_set_slide_tags_and_list_counts_only_favorites(tmp_db):
+    sid = db.add_source("/x", "Dom")
+    fid = add_indexed_file(sid, "/x/a.pptx", [("t0", "a"), ("t1", "b"), ("t2", "c")])
+    db.set_slide_favorite(fid, 0, True)
+    db.set_slide_favorite(fid, 1, True)
+    assert db.set_slide_tags(fid, 0, ["Board", "Q3"]) == ["Board", "Q3"]
+    db.set_slide_tags(fid, 1, ["q3"])
+    db.set_slide_tags(fid, 2, ["Hidden"])  # not a favorite: must not be offered
+    assert db.set_slide_tags(fid, 9, ["x"]) is None
+    assert db.list_favorite_tags() == [{"name": "Board", "count": 1}, {"name": "Q3", "count": 1}, {"name": "q3", "count": 1}]
+
+
+def test_reindex_carries_tags_and_date_with_the_star(tmp_db):
+    sid = db.add_source("/x", "Dom")
+    fid = add_indexed_file(sid, "/x/a.pptx", [("t0", "alpha"), ("t1", "beta")])
+    db.set_slide_favorite(fid, 0, True)
+    db.set_slide_tags(fid, 0, ["Keep"])
+    starred_at = db.get_slide(fid, 0)["favorited_at"]
+
+    add_indexed_file(sid, "/x/a.pptx", [("new", "gamma"), ("t1", "beta"), ("t0", "alpha")])  # alpha moved to index 2
+    rows = {r["slide_index"]: r for r in db.list_slides(fid)}
+    assert bool(rows[2]["favorite"]) and db.parse_tags(rows[2]["tags"]) == ["Keep"]
+    assert rows[2]["favorited_at"] == starred_at
+    assert db.parse_tags(rows[0]["tags"]) == [] and rows[0]["favorited_at"] is None
+
+
+def test_migration_adds_tag_and_date_columns(tmp_db):
+    conn = db.get_conn()
+    conn.executescript("DROP TABLE slides_fts; DROP TABLE slides; CREATE TABLE slides ("
+                       "id INTEGER PRIMARY KEY, file_id INTEGER, slide_index INTEGER, title TEXT, body_text TEXT, thumb_file TEXT)")
+    db._migrate(conn)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(slides)")}
+    assert {"favorited_at", "tags"} <= cols
+
+
+def test_discover_files_can_skip_subfolders(tmp_path):
+    from app import indexer
+    (tmp_path / "sub").mkdir()
+    for p in ["top.pptx", "top.pdf", "notes.txt", "sub/deep.pptx", "~$top.pptx"]:
+        (tmp_path / p).write_bytes(b"x")
+    assert [p.name for p in indexer.discover_files(str(tmp_path))] == ["deep.pptx", "top.pdf", "top.pptx"]
+    assert [p.name for p in indexer.discover_files(str(tmp_path), recursive=False)] == ["top.pdf", "top.pptx"]
+
+
+def test_source_recursive_flag_defaults_on_and_can_change(tmp_db):
+    a = db.add_source("/a", "D")
+    b = db.add_source("/b", "D", recursive=False)
+    assert db.get_source(a)["recursive"] == 1 and db.get_source(b)["recursive"] == 0
+    assert db.set_source_recursive(b, True) and db.get_source(b)["recursive"] == 1
+    assert not db.set_source_recursive(999, True)
+
+
+def test_migration_adds_recursive_to_old_sources_table(tmp_db):
+    conn = db.get_conn()
+    conn.executescript("PRAGMA foreign_keys=OFF; DROP TABLE sources; CREATE TABLE sources (id INTEGER PRIMARY KEY, path TEXT, domain TEXT, "
+                       "status TEXT, error_message TEXT, files_total INTEGER, files_done INTEGER, created_at TEXT, last_indexed_at TEXT);"
+                       "INSERT INTO sources (path, domain) VALUES ('/old', 'D');")
+    db._migrate(conn)
+    assert conn.execute("SELECT recursive FROM sources").fetchone()[0] == 1  # existing sources keep indexing subfolders
+
+
+def test_storage_info_reports_paths_and_thumbnail_usage(tmp_db):
+    (db.THUMB_DIR / "a.png").write_bytes(b"12345")
+    info = db.storage_info()
+    assert info["db_path"] == str(db.DB_PATH) and info["thumbnails_dir"] == str(db.THUMB_DIR)
+    assert info["thumbnail_count"] == 1 and info["thumbnails_bytes"] == 5 and info["db_bytes"] > 0

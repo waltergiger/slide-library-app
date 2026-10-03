@@ -35,11 +35,11 @@ def add_indexed_file(source_id, path, slides, ext="pptx", thumbs=True):
 
     file_id, prior = db.upsert_file(source_id, str(path), "Dom", Path(path).stem, ext, len(slides), 1.0, 1)
     hashes = {i: indexer._content_hash(t) for i, (_, t) in enumerate(slides)}
-    fav = db.carry_favorites(prior, hashes)
+    fav = db.carry_favorite_meta(prior, hashes)
     for i, (title, text) in enumerate(slides):
         thumb = None
         if thumbs:
             thumb = f"{Path(path).stem}-{i}.png"
             (db.THUMB_DIR / thumb).write_bytes(png_bytes())
-        db.insert_slide(file_id, i, title, text, thumb, favorite=i in fav, content_hash=hashes[i])
+        db.insert_slide(file_id, i, title, text, thumb, favorite=i in fav, content_hash=hashes[i], meta=fav.get(i))
     return file_id

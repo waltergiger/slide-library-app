@@ -1,5 +1,5 @@
-/* Pure sizing rules for the library zoom and the resizable deck panel, kept
- * free of DOM so they can be unit-tested with plain Node (tests/js). */
+/* Pure view rules (library zoom, resizable deck panel, favorites grouping),
+ * kept free of DOM so they can be unit-tested with plain Node (tests/js). */
 (function (root) {
   "use strict";
 
@@ -57,7 +57,78 @@
     return "file://" + (p.startsWith("/") ? "" : "/") + encode(p);
   }
 
-  const api = { fileUrl, ZOOM_STEPS, DEFAULT_ZOOM, PANEL, normalizeZoom, stepZoom, maxPanelWidth, clampPanelWidth };
+  // ---- favorites: tags and grouping --------------------------------------
+
+  const MAX_TAG_LEN = 40; // mirrors app/db.py so the UI never shows a tag the server would cut
+
+  const cleanTag = (t) => String(t == null ? "" : t).split(/\s+/).filter(Boolean).join(" ").slice(0, MAX_TAG_LEN);
+
+  /** "Q3, board  pack," -> ["Q3", "board pack"]: commas let several tags be typed at once. */
+  function parseTagInput(text) {
+    return String(text == null ? "" : text).split(",").map(cleanTag).filter(Boolean);
+  }
+
+  /** Appends tags not already present, ignoring case; existing spelling wins. */
+  function mergeTags(existing, added) {
+    const out = [...(existing || [])];
+    const seen = new Set(out.map((t) => t.toLowerCase()));
+    (added || []).forEach((t) => { if (!seen.has(t.toLowerCase())) { seen.add(t.toLowerCase()); out.push(t); } });
+    return out;
+  }
+
+  /** One section per tag (a slide with two tags appears in both), A–Z, then "Untagged". */
+  function groupByTag(slides) {
+    const groups = new Map();
+    const untagged = [];
+    (slides || []).forEach((s) => {
+      const tags = s.tags || [];
+      if (!tags.length) { untagged.push(s); return; }
+      tags.forEach((t) => {
+        const key = "tag:" + t.toLowerCase();
+        if (!groups.has(key)) groups.set(key, { key, label: t, items: [] });
+        groups.get(key).items.push(s);
+      });
+    });
+    const out = [...groups.values()].sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
+    if (untagged.length) out.push({ key: "untagged", label: "Untagged", items: untagged });
+    return out;
+  }
+
+  const pad = (n) => String(n).padStart(2, "0");
+  const localDayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+  function dayLabel(date, now) {
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const diff = Math.round((today - day) / 86400000); // rounding absorbs DST-shortened days
+    if (diff === 0) return "Today";
+    if (diff === 1) return "Yesterday";
+    return date.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  }
+
+  /** One section per local calendar day the star was set, newest first. Stars
+   *  from before dates were recorded have no timestamp and go last. */
+  function groupByDate(slides, now) {
+    now = now || new Date();
+    const groups = new Map();
+    const undated = [];
+    (slides || []).forEach((s) => {
+      const d = s.favorited_at ? new Date(s.favorited_at) : null;
+      if (!d || Number.isNaN(d.getTime())) { undated.push(s); return; }
+      const key = "date:" + localDayKey(d);
+      if (!groups.has(key)) groups.set(key, { key, label: dayLabel(d, now), items: [] });
+      groups.get(key).items.push(s);
+    });
+    const out = [...groups.values()].sort((a, b) => (a.key < b.key ? 1 : -1));
+    out.forEach((g) => g.items.sort((a, b) => (a.favorited_at < b.favorited_at ? 1 : a.favorited_at > b.favorited_at ? -1 : 0)));
+    if (undated.length) out.push({ key: "date:none", label: "Earlier (no date recorded)", items: undated });
+    return out;
+  }
+
+  const api = {
+    fileUrl, ZOOM_STEPS, DEFAULT_ZOOM, PANEL, normalizeZoom, stepZoom, maxPanelWidth, clampPanelWidth,
+    MAX_TAG_LEN, parseTagInput, mergeTags, groupByTag, groupByDate, dayLabel,
+  };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ViewModel = api;
 })(typeof self !== "undefined" ? self : this);

@@ -30,11 +30,12 @@
     settings: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="m19.4 15 .1.1a2 2 0 0 1-2.8 2.8l-.1-.1a2 2 0 0 0-3.4 1.4v.2a2 2 0 0 1-4 0v-.2a2 2 0 0 0-3.4-1.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A2 2 0 0 0 1.6 12a2 2 0 0 1 2-2h.2a2 2 0 0 0 1.4-3.4l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A2 2 0 0 0 11.4 4h.2a2 2 0 0 1 2 2v.2A2 2 0 0 0 17 7.6l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A2 2 0 0 0 19.4 15Z"/></svg>`,
     starFill: `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.7 5.9 6.3.7-4.7 4.4 1.3 6.2L12 17.3 6.4 20.2l1.3-6.2-4.7-4.4 6.3-.7Z"/></svg>`,
     grid: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>`,
+    copy: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>`,
     list: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
   };
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const APP_VERSION = "0.1.0";
+  const APP_VERSION = "0.2.0";
 
   // ---------------------------------------------------------------- state --
   const BUILDER_KEY = "slidelib-builder";
@@ -43,9 +44,14 @@
   const ZOOM_KEY = "slidelib-zoom";
   const PANEL_W_KEY = "slidelib-panel-width";
   const LIBRARY_VIEW_KEY = "slidelib-library-view";
+  const FAV_GROUP_KEY = "slidelib-fav-group";
+  const FAV_COLLAPSED_KEY = "slidelib-fav-collapsed";
 
   const readPref = (key) => { try { return localStorage.getItem(key); } catch (e) { return null; } };
   const writePref = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (e) { /* per-viewer convenience only */ } };
+  const readCollapsed = () => {
+    try { const v = JSON.parse(readPref(FAV_COLLAPSED_KEY) || "[]"); return new Set(Array.isArray(v) ? v : []); } catch (e) { return new Set(); }
+  };
 
   // The Builder is auto-kept in localStorage as a working copy (survives a
   // reload); "Save" additionally stores it server-side as a named deck that
@@ -79,6 +85,10 @@
     typesBeforeFavorites: null,
     decks: [],
     favSlides: [],
+    favTags: [],                 // every tag in use on a favorite, for autocomplete
+    favGroupBy: readPref(FAV_GROUP_KEY) === "date" ? "date" : "tags",
+    favCollapsed: readCollapsed(),
+    tagEditing: null,            // {fileId, slideIndex} of the tile with an open tag input
     currentDeck: null,
     slideSelection: new Set(),
     sources: [],
@@ -87,7 +97,8 @@
     settingsSaving: false,
     settingsBrowsing: false,
     showSourceForm: false,
-    sourceForm: { path: "", domain: "" },
+    sourceForm: { path: "", domain: "", recursive: true },
+    storage: null,              // where this server keeps its data (read-only, shown in Settings)
     browsing: false,
     builder: loadBuilder(),
     slideResults: [],
@@ -133,7 +144,7 @@
     if (state.selectedDomain && state.selectedDomain !== "All domains") params.set("domain", state.selectedDomain);
     if (state.query.trim()) params.set("q", state.query.trim());
     if (favoriteSlidesMode()) {
-      state.favSlides = await api(`/api/favorites?${params}`);
+      [state.favSlides, state.favTags] = await Promise.all([api(`/api/favorites?${params}`), api("/api/favorites/tags")]);
       return;
     }
     if (state.filters.favoritesOnly) params.set("favorites_only", "true");
@@ -150,7 +161,7 @@
   async function refreshRenderers() { state.renderers = await api("/api/renderers"); }
   async function refreshSources() { state.sources = await api("/api/sources"); }
   async function refreshSettings() {
-    state.settings = await api("/api/settings");
+    [state.settings, state.storage] = await Promise.all([api("/api/settings"), api("/api/storage").catch(() => null)]);
     state.settingsForm = { ...state.settings };
   }
   async function loadDeck(id) {
@@ -339,6 +350,7 @@
     el.textContent = st.text;
   }
 
+  let rendering = false;
   let pendingFocus = null;
   let focusTarget = null; // "name" (deck name field) or "edit" (inline saved-deck editor)
 
@@ -363,6 +375,56 @@
     render();
   }
 
+  // ---- favorite tags
+  const findFav = (fileId, slideIndex) => state.favSlides.find((f) => f.file_id === fileId && f.slide_index === slideIndex)
+    || state.slideResults.find((f) => f.file_id === fileId && f.slide_index === slideIndex);
+
+  async function saveTags(fileId, slideIndex, tags) {
+    try {
+      const res = await api(`/api/decks/${fileId}/slides/${slideIndex}/tags`, { method: "PUT", body: JSON.stringify({ tags }) });
+      [...state.favSlides, ...state.slideResults]
+        .filter((f) => f.file_id === fileId && f.slide_index === slideIndex)
+        .forEach((f) => { f.tags = res.tags; });
+      state.favTags = await api("/api/favorites/tags").catch(() => state.favTags);
+    } catch (err) {
+      showToast(String(err.message || err), "error");
+    }
+  }
+
+  // Reads the open tag input, so it works from Enter, blur, or a re-render.
+  async function commitTagInput(keepOpen) {
+    const ed = state.tagEditing;
+    const input = document.querySelector(".tag-input");
+    if (!ed) return;
+    const added = ViewModel.parseTagInput(input ? input.value : "");
+    if (!keepOpen) state.tagEditing = null;
+    const fav = findFav(ed.fileId, ed.slideIndex);
+    if (added.length && fav) await saveTags(ed.fileId, ed.slideIndex, ViewModel.mergeTags(fav.tags, added));
+    if (keepOpen) { focusTarget = "tag"; render(); } else renderAfterPointer();
+  }
+
+  // A blur-triggered render that lands between mousedown and click would
+  // replace the clicked element and swallow the click, so wait for it.
+  let pointerDown = false, renderQueued = false;
+  document.addEventListener("pointerdown", () => { pointerDown = true; }, true);
+  document.addEventListener("pointerup", () => setTimeout(() => {
+    pointerDown = false;
+    if (renderQueued) { renderQueued = false; render(); }
+  }, 0), true);
+  function renderAfterPointer() { if (pointerDown) renderQueued = true; else render(); }
+
+  function setFavGroupBy(mode) {
+    state.favGroupBy = mode === "date" ? "date" : "tags";
+    writePref(FAV_GROUP_KEY, state.favGroupBy);
+    render();
+  }
+
+  function setFavCollapsed(keys, collapsed) {
+    keys.forEach((k) => (collapsed ? state.favCollapsed.add(k) : state.favCollapsed.delete(k)));
+    writePref(FAV_COLLAPSED_KEY, JSON.stringify([...state.favCollapsed]));
+    render();
+  }
+
   // -------------------------------------------------------------- render --
   function render() {
     applyTheme();
@@ -375,11 +437,13 @@
     else if (state.view === "sources") html = renderSources();
     else html = renderSettings();
     const withDecks = state.view === "library" || state.view === "deck";
+    rendering = true;
     app.innerHTML = html
       + (withDecks ? `<datalist id="categoryOptions">${categoriesOf().map((c) => `<option value="${esc(c)}">`).join("")}</datalist>` : "")
       + (withDecks && state.showDrafts ? renderDraftsModal() : "")
       + (rendererPopupVisible() ? renderRendererModal() : "")
       + renderToast();
+    rendering = false;
     attachHandlers();
     if (pendingFocus) {
       const target = [...app.querySelectorAll(".chapter-slide")].find(
@@ -388,7 +452,9 @@
       pendingFocus = null;
     }
     if (focusTarget) {
-      const el = focusTarget === "name" ? document.getElementById("deckName") : app.querySelector(".draft-row.editing input");
+      const el = focusTarget === "name" ? document.getElementById("deckName")
+        : focusTarget === "tag" ? app.querySelector(".tag-input")
+        : app.querySelector(".draft-row.editing input");
       if (el) { el.focus(); if (el.select) el.select(); }
       focusTarget = null;
     }
@@ -480,7 +546,42 @@
         <div class="slide-index">${f.slide_index + 1}</div>
       </div>
       <div class="fav-caption"><div class="t">${esc(f.title)}</div><div class="d"><span class="badge-mini ${b.cls}">${b.label}</span>${esc(f.deck_title)}</div></div>
+      ${f.favorite && Array.isArray(f.tags) ? renderTagRow(f) : ""}
     </div>`;
+  }
+
+  function renderTagRow(f) {
+    const ids = `data-file-id="${f.file_id}" data-index="${f.slide_index}"`;
+    const chips = f.tags.map((t) => `<span class="slide-tag">${esc(t)}<button type="button" class="slide-tag-x" data-action="removeTag" ${ids} data-tag="${esc(t)}" aria-label="Remove tag ${esc(t)}">${ICON.xSmall}</button></span>`).join("");
+    const ed = state.tagEditing;
+    const editing = ed && ed.fileId === f.file_id && ed.slideIndex === f.slide_index;
+    const control = editing
+      ? `<input class="tag-input" type="text" list="favTagOptions" maxlength="200" placeholder="Tag, tag…" aria-label="Add tags to ${esc(f.title)} (comma separated)">`
+      : `<button type="button" class="tag-add" data-action="addTagStart" ${ids} aria-label="Add tag to ${esc(f.title)}">${ICON.plus.replace(/15/g, "11")} Tag</button>`;
+    return `<div class="tag-row">${chips}${control}</div>`;
+  }
+
+  function favGroupToolbar(groups) {
+    const btn = (mode, label) => `<button type="button" class="seg-btn ${state.favGroupBy === mode ? "active" : ""}" data-action="setFavGroupBy" data-mode="${mode}" aria-pressed="${state.favGroupBy === mode}">${label}</button>`;
+    const allCollapsed = groups.length && groups.every((g) => state.favCollapsed.has(g.key));
+    return `<div class="fav-toolbar">
+      <span class="fav-toolbar-label">Group by</span>
+      <div class="seg" role="group" aria-label="Group favorites by">${btn("tags", "Tags")}${btn("date", "Date")}</div>
+      <button type="button" class="link-btn" data-action="${allCollapsed ? "expandAllFav" : "collapseAllFav"}">${allCollapsed ? "Expand all" : "Collapse all"}</button>
+    </div>`;
+  }
+
+  function renderCollapsibleGroup(g) {
+    const collapsed = state.favCollapsed.has(g.key);
+    const n = g.items.length;
+    return `<section class="fav-group ${collapsed ? "collapsed" : ""}">
+      <button type="button" class="fav-group-toggle" data-action="toggleFavGroup" data-key="${esc(g.key)}" aria-expanded="${!collapsed}">
+        <span class="fav-group-pm" aria-hidden="true">${collapsed ? ICON.plus : ICON.minus}</span>
+        <span class="tag ${g.key === "untagged" || g.key === "date:none" ? "tag-muted" : ""}">${esc(g.label)}</span>
+        <span class="count">${n} slide${n === 1 ? "" : "s"}</span>
+      </button>
+      ${collapsed ? "" : `<div class="fav-grid ${state.libraryView === "list" ? "list-view" : ""}">${g.items.map(renderSlideTile).join("")}</div>`}
+    </section>`;
   }
 
   function renderSlideGroup(label, items) {
@@ -496,9 +597,11 @@
       const msg = state.query ? `No favorite slides match "${esc(state.query)}".` : "No favorite slides yet — star a few slides in a deck first.";
       return { count: 0, unit: "slide", html: `<div class="empty-state">${ICON.starFill}<span style="font-size:14.5px;">${msg}</span></div>` };
     }
-    const groups = new Map();
-    slides.forEach((f) => { if (!groups.has(f.domain)) groups.set(f.domain, []); groups.get(f.domain).push(f); });
-    const html = [...groups].map(([domain, items]) => renderSlideGroup(domain, items)).join("");
+    const groups = state.favGroupBy === "date" ? ViewModel.groupByDate(slides) : ViewModel.groupByTag(slides);
+    state._favGroupKeys = groups.map((g) => g.key);
+    const html = favGroupToolbar(groups)
+      + `<datalist id="favTagOptions">${state.favTags.map((t) => `<option value="${esc(t.name)}">`).join("")}</datalist>`
+      + groups.map(renderCollapsibleGroup).join("");
     return { count: slides.length, unit: "slide", html };
   }
 
@@ -847,6 +950,7 @@
           <div class="meta-line">
             <span class="tag">${esc(s.domain)}</span>
             ${chip}
+            <label class="panel-check" title="Re-indexes the directory when changed"><input type="checkbox" data-bind="sourceRecursiveRow" data-id="${s.id}" ${s.recursive ? "checked" : ""} ${s.status === "indexing" || s.status === "pending" ? "disabled" : ""}> Include subfolders</label>
             <span style="font-size:12px;color:var(--text-secondary);">${statsLine}</span>
           </div>
           ${(s.status === "indexing" || s.status === "pending") ? `<div class="progress-track"><div class="progress-fill" style="width:${progress}%"></div></div>` : ""}
@@ -876,7 +980,8 @@
           <datalist id="domainOptions">${state.domains.filter((d) => d.name !== "All domains").map((d) => `<option value="${esc(d.name)}">`).join("")}</datalist>
         </div>
       </div>
-      <div style="display:flex;gap:10px;justify-content:flex-end;">
+      <div style="display:flex;gap:10px;align-items:center;">
+        <label class="panel-check" style="margin-right:auto;"><input type="checkbox" data-bind="sourceRecursive" ${state.sourceForm.recursive ? "checked" : ""}> Include all subfolders <span style="color:var(--text-tertiary);">— off indexes only the files directly in this folder</span></label>
         <button type="button" class="btn btn-secondary btn-sm" data-action="toggleSourceForm">Cancel</button>
         <button type="button" class="btn btn-primary btn-sm" data-action="submitSource">Start indexing</button>
       </div>
@@ -908,7 +1013,7 @@
       <div class="settings-header">
         <a href="#" class="back-link" data-action="goto" data-view="library">${ICON.chevronLeft} Back to library</a>
         <div class="row">
-          <div><h1>Settings</h1><p>Choose the PowerPoint design used for exports and where saved Builder decks are kept.</p></div>
+          <div><h1>Settings</h1><p>Choose the PowerPoint design used for exports, where saved Builder decks are kept, and see where the library data is stored.</p></div>
           ${themeToggleButton()}
         </div>
       </div>
@@ -935,9 +1040,34 @@
             <div class="settings-note">Existing drafts remain available in the app database. New saves and renames update a file named after the deck.</div>
           </div>
         </section>
+        ${renderStorageSection()}
         <div class="settings-actions"><button type="button" class="btn btn-primary" data-action="saveSettings" ${state.settingsSaving ? "disabled" : ""}>${ICON.save} ${state.settingsSaving ? "Saving…" : "Save settings"}</button></div>
       </div>
     </div>`;
+  }
+
+  const fmtBytes = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + " MB" : n >= 1024 ? Math.round(n / 1024) + " KB" : n + " B");
+
+  function renderStorageSection() {
+    const st = state.storage;
+    if (!st) return "";
+    const row = (label, path, detail, which) => `<div class="storage-row">
+      <div class="storage-label">${label}</div>
+      <div class="storage-value"><code>${esc(path)}</code>${detail ? `<span class="settings-note">${detail}</span>` : ""}</div>
+      <div class="storage-actions">
+        <button type="button" class="icon-btn sm" data-action="copyPath" data-path="${esc(path)}" aria-label="Copy path" title="Copy path">${ICON.copy}</button>
+        ${which ? `<button type="button" class="icon-btn sm" data-action="revealStorage" data-which="${which}" aria-label="Show ${label} in file browser" title="Show in Finder / Explorer">${ICON.folder}</button>` : ""}
+      </div>
+    </div>`;
+    return `<section class="settings-section">
+      <div class="settings-section-head"><div><h2>Data storage</h2><p>Where this running server reads and writes its library. Read-only — the database and thumbnails always live in the app's data folder.</p></div></div>
+      <div class="storage-list">
+        ${row("Data folder", st.data_dir, "", "data")}
+        ${row("Database", st.db_path, fmtBytes(st.db_bytes), "")}
+        ${row("Thumbnails", st.thumbnails_dir, `${st.thumbnail_count} file${st.thumbnail_count === 1 ? "" : "s"} · ${fmtBytes(st.thumbnails_bytes)}`, "thumbnails")}
+        ${row("Drafts", st.drafts_dir, "Set above", "drafts")}
+      </div>
+    </section>`;
   }
 
   // ---------------------------------------------------------- interaction --
@@ -1085,6 +1215,8 @@
       if (ch) { ch.name = v; saveBuilder(); }
     } else if (name === "sourcePath") { state.sourceForm.path = v; }
     else if (name === "sourceDomain") { state.sourceForm.domain = v; }
+    else if (name === "sourceRecursive") { state.sourceForm.recursive = v; }
+    else if (name === "sourceRecursiveRow") { setSourceRecursive(Number(el.dataset.id), v); }
     else if (name === "templatePath") { state.settingsForm.template_path = v; }
     else if (name === "draftsPath") { state.settingsForm.drafts_path = v; }
     else if (name.startsWith("filter-")) {
@@ -1150,6 +1282,23 @@
       const idx = Number(el.dataset.index);
       const next = el.dataset.favorite !== "1";
       return toggleFavoriteFor(fileId, idx, next);
+    }
+
+    if (action === "setFavGroupBy") return setFavGroupBy(el.dataset.mode);
+    if (action === "toggleFavGroup") return setFavCollapsed([el.dataset.key], !state.favCollapsed.has(el.dataset.key));
+    if (action === "collapseAllFav" || action === "expandAllFav") return setFavCollapsed(state._favGroupKeys || [], action === "collapseAllFav");
+    if (action === "addTagStart") {
+      state.tagEditing = { fileId: Number(el.dataset.fileId), slideIndex: Number(el.dataset.index) };
+      focusTarget = "tag";
+      return render();
+    }
+    if (action === "removeTag") {
+      const fileId = Number(el.dataset.fileId), idx = Number(el.dataset.index);
+      const fav = findFav(fileId, idx);
+      if (!fav) return;
+      const drop = el.dataset.tag.toLowerCase();
+      await saveTags(fileId, idx, fav.tags.filter((t) => t.toLowerCase() !== drop));
+      return render();
     }
 
     if (action === "addSelectionToBuilder" || action === "addAllToBuilder") {
@@ -1222,6 +1371,12 @@
     if (action === "browseTemplate") return browseTemplate();
     if (action === "browseDraftsFolder") return browseDraftsFolder();
     if (action === "saveSettings") return saveSettings();
+    if (action === "revealStorage") return revealStorage(el.dataset.which);
+    if (action === "copyPath") {
+      try { await navigator.clipboard.writeText(el.dataset.path); showToast("Path copied."); }
+      catch (e) { showToast("Couldn't copy — select the path and copy it manually.", "error"); }
+      return;
+    }
 
     if (action === "submitSource") return submitSource();
 
@@ -1293,12 +1448,27 @@
     finally { state.settingsSaving = false; render(); }
   }
 
+  async function setSourceRecursive(id, recursive) {
+    try {
+      await api(`/api/sources/${id}`, { method: "PATCH", body: JSON.stringify({ recursive }) });
+      showToast(recursive ? "Re-indexing including subfolders…" : "Re-indexing this folder only…");
+    } catch (err) { showToast(String(err.message || err), "error"); }
+    await refreshSources();
+    ensureSourcesPolling();
+    render();
+  }
+
+  async function revealStorage(which) {
+    try { await api(`/api/storage/${which}/reveal`, { method: "POST" }); }
+    catch (err) { showToast(String(err.message || err), "error"); }
+  }
+
   async function submitSource() {
     if (!state.sourceForm.path.trim()) { showToast("Enter a folder path first.", "error"); return; }
     try {
       await api("/api/sources", { method: "POST", body: JSON.stringify(state.sourceForm) });
       state.showSourceForm = false;
-      state.sourceForm = { path: "", domain: "" };
+      state.sourceForm = { path: "", domain: "", recursive: true };
       await refreshSources();
       ensureSourcesPolling();
       render();
@@ -1306,6 +1476,12 @@
       showToast(String(err.message || err), "error");
     }
   }
+
+  // Leaving the tag input saves what was typed. render() replacing a focused
+  // input also fires focusout; that is not the user leaving, so it's ignored.
+  document.addEventListener("focusout", (e) => {
+    if (!rendering && state.tagEditing && e.target.classList && e.target.classList.contains("tag-input")) commitTagInput(false);
+  });
 
   document.addEventListener("keydown", (e) => {
     const t = e.target;
@@ -1329,6 +1505,11 @@
     if (e.key === "Enter" && state.editingDraft && e.target.closest && e.target.closest(".draft-row.editing")) {
       e.preventDefault();
       saveDraftMeta();
+      return;
+    }
+    if (t.classList && t.classList.contains("tag-input")) {
+      if (e.key === "Enter") { e.preventDefault(); commitTagInput(true); }
+      else if (e.key === "Escape") { e.preventDefault(); state.tagEditing = null; render(); }
       return;
     }
     if (e.key === "Escape" && rendererPopupVisible()) { state.dismissRendererHelp = true; render(); return; }

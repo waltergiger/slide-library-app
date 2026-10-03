@@ -74,3 +74,36 @@ test("fileUrl tolerates empty and relative input", () => {
   assert.equal(V.fileUrl(null), "file:///");
   assert.equal(V.fileUrl("rel/a b.pdf"), "file:///rel/a%20b.pdf");
 });
+
+test("parseTagInput splits on commas, trims and drops empties", () => {
+  assert.deepEqual(V.parseTagInput(" Q3, board   pack,, "), ["Q3", "board pack"]);
+  assert.deepEqual(V.parseTagInput(""), []);
+  assert.equal(V.parseTagInput("x".repeat(99))[0].length, V.MAX_TAG_LEN);
+});
+
+test("mergeTags ignores case duplicates and keeps the existing spelling", () => {
+  assert.deepEqual(V.mergeTags(["Board"], ["board", "Q3", "q3"]), ["Board", "Q3"]);
+  assert.deepEqual(V.mergeTags(undefined, ["a"]), ["a"]);
+});
+
+test("groupByTag puts a slide in every tag section, sorts A-Z, Untagged last", () => {
+  const a = { title: "a", tags: ["zeta", "Alpha"] }, b = { title: "b", tags: ["alpha"] }, c = { title: "c", tags: [] };
+  const g = V.groupByTag([a, b, c]);
+  assert.deepEqual(g.map((x) => x.label), ["Alpha", "zeta", "Untagged"]);
+  assert.deepEqual(g[0].items, [a, b]);        // "Alpha" and "alpha" are one section
+  assert.deepEqual(g[2].items, [c]);
+  assert.deepEqual(V.groupByTag([a]).map((x) => x.key), ["tag:alpha", "tag:zeta"]); // no empty Untagged
+});
+
+test("groupByDate groups by local day, newest first, undated last", () => {
+  const now = new Date(2026, 9, 3, 15, 0);
+  const iso = (y, m, d, h) => new Date(y, m, d, h).toISOString();
+  const t1 = { favorited_at: iso(2026, 9, 3, 9) }, t2 = { favorited_at: iso(2026, 9, 3, 14) };
+  const y = { favorited_at: iso(2026, 9, 2, 23) }, old = { favorited_at: iso(2026, 7, 1, 8) };
+  const none = { favorited_at: null }, bad = { favorited_at: "garbage" };
+  const g = V.groupByDate([old, t1, none, y, t2, bad], now);
+  assert.deepEqual(g.map((x) => x.label.slice(0, 9)), ["Today", "Yesterday", g[2].label.slice(0, 9), "Earlier ("]);
+  assert.deepEqual(g[0].items, [t2, t1]);       // newest star first within a day
+  assert.deepEqual(g[2].items, [old]);
+  assert.deepEqual(g[3].items, [none, bad]);
+});

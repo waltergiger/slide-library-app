@@ -86,7 +86,10 @@ running on the same machine. If **Browse…** reports it can't open a picker
 (most likely on Linux without `python3-tk` installed, or Homebrew Python on
 macOS — `brew install python-tk`), just type or paste the path instead;
 everything else still works. Indexing runs in the background; the folder's
-status chip shows progress and flips to **Indexed** when done. Click
+status chip shows progress and flips to **Indexed** when done.
+**Include all subfolders** (on by default) decides whether the folder's
+subdirectories are indexed too or only the files directly in it; it can be
+changed later on each source row, which re-indexes that source. Click
 **Re-index** any time after files change on disk — only new or changed
 files are reprocessed, so it's fast after the first run.
 
@@ -106,6 +109,12 @@ The same page lets you choose a folder for saved Builder decks. The app keeps
 drafts in SQLite for fast reopening and also writes each saved deck as a
 readable JSON snapshot in that folder, making pre-export decks easy to back up
 or extend with later tooling. The default folder is `data/drafts`.
+
+**Data storage** at the bottom of Settings shows exactly where the running
+server keeps its library — the data folder, the SQLite database (with size),
+the thumbnails folder (file count and size) and the drafts folder — with
+buttons to copy each path or show it in Finder/Explorer. Use it to confirm
+which copy of the app and which library a server is actually using.
 
 ### Opening the original file
 
@@ -130,10 +139,20 @@ count is unchanged), so they won't disappear when files change on disk.
 The **★ Favorites** toggle above the deck grid has two modes:
 
 - **Favorites alone** (no file type selected) lists the starred slides
-  themselves, grouped by domain. Click a slide to open its deck, or its star
-  to unmark it. The sidebar domain and the search box still apply.
+  themselves, grouped by **Tags** or by **Date** starred (switch with "Group
+  by"). Each section expands/collapses with its +/- button, or all at once;
+  the choice and collapsed sections are remembered per browser. Click a slide
+  to open its deck, or its star to unmark it. The sidebar domain and the
+  search box still apply.
 - **Favorites plus PPTX and/or PDF** lists the decks of that type that
   contain at least one starred slide.
+
+**Tags**: every favorite has a "+ Tag" button under its caption — type one
+or several comma-separated tags (existing tags are suggested) and press Enter;
+click × on a chip to remove it. A slide with several tags appears under each
+of them; slides without tags are listed under "Untagged". Tags and the star
+date travel with the star through re-indexing. Stars set before this feature
+existed have no date and are listed under "Earlier (no date recorded)".
 
 Turning Favorites on clears the type toggles (and restores them when you turn
 it off again if you haven't picked a type in the meantime).

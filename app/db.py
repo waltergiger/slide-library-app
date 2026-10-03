@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS sources (
     error_message TEXT,
     files_total INTEGER NOT NULL DEFAULT 0,
     files_done INTEGER NOT NULL DEFAULT 0,
+    recursive INTEGER NOT NULL DEFAULT 1,         -- 1 = include subfolders, 0 = this folder only
     created_at TEXT NOT NULL,
     last_indexed_at TEXT
 );
@@ -54,6 +55,8 @@ CREATE TABLE IF NOT EXISTS slides (
     thumb_file TEXT,
     favorite INTEGER NOT NULL DEFAULT 0,
     content_hash TEXT,
+    favorited_at TEXT,                            -- when the star was set; NULL for stars older than this column
+    tags TEXT NOT NULL DEFAULT '[]',              -- JSON array of user labels on a favorite
     UNIQUE(file_id, slide_index)
 );
 
@@ -124,10 +127,36 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "content_hash" not in cols:
         conn.execute("ALTER TABLE slides ADD COLUMN content_hash TEXT")
         conn.commit()
+    if "favorited_at" not in cols:
+        conn.execute("ALTER TABLE slides ADD COLUMN favorited_at TEXT")
+        conn.commit()
+    if "tags" not in cols:
+        conn.execute("ALTER TABLE slides ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+        conn.commit()
+    source_cols = {row["name"] for row in conn.execute("PRAGMA table_info(sources)")}
+    if "recursive" not in source_cols:
+        conn.execute("ALTER TABLE sources ADD COLUMN recursive INTEGER NOT NULL DEFAULT 1")
+        conn.commit()
     draft_cols = {row["name"] for row in conn.execute("PRAGMA table_info(drafts)")}
     if "category" not in draft_cols:
         conn.execute("ALTER TABLE drafts ADD COLUMN category TEXT")
         conn.commit()
+
+
+# ---- storage locations -------------------------------------------------------
+
+def storage_info() -> dict:
+    """Where this instance keeps its data, so the user can verify which
+    library a running server is actually using."""
+    thumbs = [p for p in THUMB_DIR.iterdir() if p.is_file()] if THUMB_DIR.exists() else []
+    return {
+        "data_dir": str(DATA_DIR),
+        "db_path": str(DB_PATH),
+        "db_bytes": DB_PATH.stat().st_size if DB_PATH.exists() else 0,
+        "thumbnails_dir": str(THUMB_DIR),
+        "thumbnail_count": len(thumbs),
+        "thumbnails_bytes": sum(p.stat().st_size for p in thumbs),
+    }
 
 
 # ---- settings ---------------------------------------------------------------
@@ -149,14 +178,21 @@ def set_setting(key: str, value: str) -> None:
 
 # ---- sources -----------------------------------------------------------
 
-def add_source(path: str, domain: str) -> int:
+def add_source(path: str, domain: str, recursive: bool = True) -> int:
     conn = get_conn()
     cur = conn.execute(
-        "INSERT INTO sources (path, domain, status, created_at) VALUES (?, ?, 'pending', ?)",
-        (path, domain, now()),
+        "INSERT INTO sources (path, domain, recursive, status, created_at) VALUES (?, ?, ?, 'pending', ?)",
+        (path, domain, 1 if recursive else 0, now()),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def set_source_recursive(source_id: int, recursive: bool) -> bool:
+    conn = get_conn()
+    cur = conn.execute("UPDATE sources SET recursive = ? WHERE id = ?", (1 if recursive else 0, source_id))
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def list_sources() -> list[sqlite3.Row]:
@@ -215,14 +251,32 @@ class PriorFile:
     """What a file looked like before re-indexing replaced its slides."""
 
     def __init__(self, favorites: list[tuple[int, str | None]] | None = None,
-                 slide_count: int = 0, thumbs: set[str] | None = None):
+                 slide_count: int = 0, thumbs: set[str] | None = None,
+                 meta: dict[int, FavoriteMeta] | None = None):
         self.favorites = favorites or []
         self.slide_count = slide_count
         self.thumbs = thumbs or set()
+        self.meta = meta or {}  # old slide_index -> what travels with its star
+
+
+class FavoriteMeta:
+    def __init__(self, favorited_at: str | None = None, tags: list[str] | None = None):
+        self.favorited_at = favorited_at
+        self.tags = tags or []
 
 
 def carry_favorites(prior: PriorFile, new_hashes: dict[int, str | None]) -> set[int]:
-    """Which slide indices of the re-indexed file inherit a favorite star.
+    """Which slide indices of the re-indexed file inherit a favorite star."""
+    return set(match_favorites(prior, new_hashes))
+
+
+def carry_favorite_meta(prior: PriorFile, new_hashes: dict[int, str | None]) -> dict[int, FavoriteMeta]:
+    """New slide index -> the date and tags its inherited star carries."""
+    return {new: prior.meta.get(old, FavoriteMeta()) for new, old in match_favorites(prior, new_hashes).items()}
+
+
+def match_favorites(prior: PriorFile, new_hashes: dict[int, str | None]) -> dict[int, int]:
+    """Maps each new slide index that inherits a star to the old index it came from.
 
     Stars follow slide *content* (text hash) so reordering or inserting slides
     doesn't move them onto the wrong slide. A star whose content no longer
@@ -233,16 +287,16 @@ def carry_favorites(prior: PriorFile, new_hashes: dict[int, str | None]) -> set[
     for idx, h in new_hashes.items():
         if h:
             by_hash.setdefault(h, []).append(idx)
-    result: set[int] = set()
+    result: dict[int, int] = {}
     unmatched: list[int] = []
     for old_idx, old_hash in prior.favorites:
         free = [i for i in by_hash.get(old_hash, []) if i not in result] if old_hash else []
         if free:
-            result.add(min(free, key=lambda i: abs(i - old_idx)))
+            result[min(free, key=lambda i: abs(i - old_idx))] = old_idx
         else:
             unmatched.append(old_idx)
     if prior.slide_count == len(new_hashes):
-        result.update(i for i in unmatched if i in new_hashes and i not in result)
+        result.update({i: i for i in unmatched if i in new_hashes and i not in result})
     return result
 
 
@@ -255,13 +309,14 @@ def upsert_file(source_id, path, domain, title, ext, slide_count, mtime, size) -
     if row:
         file_id = row["id"]
         old = conn.execute(
-            "SELECT slide_index, favorite, content_hash, thumb_file FROM slides WHERE file_id = ?",
+            "SELECT slide_index, favorite, content_hash, thumb_file, favorited_at, tags FROM slides WHERE file_id = ?",
             (file_id,),
         ).fetchall()
         prior = PriorFile(
             favorites=[(r["slide_index"], r["content_hash"]) for r in old if r["favorite"]],
             slide_count=row["slide_count"],
             thumbs={r["thumb_file"] for r in old if r["thumb_file"]},
+            meta={r["slide_index"]: FavoriteMeta(r["favorited_at"], parse_tags(r["tags"])) for r in old if r["favorite"]},
         )
         conn.execute(
             """UPDATE files SET domain=?, title=?, ext=?, slide_count=?, mtime=?, size=?, indexed_at=?
@@ -281,24 +336,78 @@ def upsert_file(source_id, path, domain, title, ext, slide_count, mtime, size) -
     return file_id, prior
 
 
-def insert_slide(file_id, slide_index, title, body_text, thumb_file, favorite=False, content_hash=None) -> None:
+def insert_slide(file_id, slide_index, title, body_text, thumb_file, favorite=False, content_hash=None,
+                 meta: FavoriteMeta | None = None) -> None:
+    meta = meta or FavoriteMeta()
     conn = get_conn()
     conn.execute(
-        """INSERT INTO slides (file_id, slide_index, title, body_text, thumb_file, favorite, content_hash)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (file_id, slide_index, title, body_text, thumb_file, 1 if favorite else 0, content_hash),
+        """INSERT INTO slides (file_id, slide_index, title, body_text, thumb_file, favorite, content_hash, favorited_at, tags)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (file_id, slide_index, title, body_text, thumb_file, 1 if favorite else 0, content_hash,
+         meta.favorited_at if favorite else None, json.dumps(meta.tags if favorite else [])),
     )
     conn.commit()
 
 
 def set_slide_favorite(file_id: int, slide_index: int, favorite: bool) -> bool:
+    # Re-starring an already starred slide keeps its original date; tags stay
+    # on an unstarred slide so an accidental un-star can be undone losslessly.
     conn = get_conn()
     cur = conn.execute(
-        "UPDATE slides SET favorite = ? WHERE file_id = ? AND slide_index = ?",
-        (1 if favorite else 0, file_id, slide_index),
+        """UPDATE slides SET favorite = ?,
+               favorited_at = CASE WHEN ? = 0 THEN NULL WHEN favorite = 1 THEN favorited_at ELSE ? END
+           WHERE file_id = ? AND slide_index = ?""",
+        (1 if favorite else 0, 1 if favorite else 0, now(), file_id, slide_index),
     )
     conn.commit()
     return cur.rowcount > 0
+
+
+MAX_TAGS = 20
+MAX_TAG_LEN = 40
+
+
+def normalize_tags(tags: list[str]) -> list[str]:
+    """Trim, collapse whitespace, drop empties and case-insensitive duplicates
+    (first spelling wins), cap count and length."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in tags:
+        t = " ".join(str(t).split())[:MAX_TAG_LEN]
+        if t and t.casefold() not in seen:
+            seen.add(t.casefold())
+            out.append(t)
+    return out[:MAX_TAGS]
+
+
+def parse_tags(raw: str | None) -> list[str]:
+    try:
+        value = json.loads(raw or "[]")
+    except ValueError:
+        return []
+    return [t for t in value if isinstance(t, str)] if isinstance(value, list) else []
+
+
+def set_slide_tags(file_id: int, slide_index: int, tags: list[str]) -> list[str] | None:
+    """Returns the stored (normalized) tags, or None if the slide doesn't exist."""
+    clean = normalize_tags(tags)
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE slides SET tags = ? WHERE file_id = ? AND slide_index = ?",
+        (json.dumps(clean), file_id, slide_index),
+    )
+    conn.commit()
+    return clean if cur.rowcount else None
+
+
+def list_favorite_tags() -> list[dict]:
+    rows = get_conn().execute(
+        """SELECT j.value AS name, COUNT(*) AS count
+           FROM slides, json_each(slides.tags) AS j
+           WHERE slides.favorite = 1 AND json_valid(slides.tags)
+           GROUP BY j.value ORDER BY j.value COLLATE NOCASE"""
+    ).fetchall()
+    return [{"name": r["name"], "count": r["count"]} for r in rows]
 
 
 def delete_files_not_in(source_id: int, keep_paths: set[str]) -> None:

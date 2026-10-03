@@ -95,3 +95,53 @@ def test_browse_file_returns_path_or_null_on_cancel(client, monkeypatch):
     assert client.post("/api/browse-file").json() == {"path": "/Users/x/brand.potx"}
     monkeypatch.setattr(file_picker, "pick_file", lambda: None)
     assert client.post("/api/browse-file").json() == {"path": None}
+
+
+def test_tags_roundtrip(client):
+    sid = db.add_source("/x", "Strategy")
+    fid = add_indexed_file(sid, "/x/a.pptx", [("Wealth", "digital wealth plan")])
+    client.post(f"/api/decks/{fid}/slides/0/favorite", json={"favorite": True})
+
+    r = client.put(f"/api/decks/{fid}/slides/0/tags", json={"tags": [" Board ", "board", "Q3"]})
+    assert r.status_code == 200 and r.json()["tags"] == ["Board", "Q3"]
+    fav = client.get("/api/favorites").json()[0]
+    assert fav["tags"] == ["Board", "Q3"] and fav["favorited_at"]
+    assert client.get("/api/search", params={"q": "wealth"}).json()[0]["tags"] == ["Board", "Q3"]
+    assert [t["name"] for t in client.get("/api/favorites/tags").json()] == ["Board", "Q3"]
+
+    assert client.put(f"/api/decks/{fid}/slides/5/tags", json={"tags": ["x"]}).status_code == 404
+    assert client.put(f"/api/decks/{fid}/slides/0/tags", json={"tags": ["x"] * 101}).status_code == 422
+    assert client.put(f"/api/decks/{fid}/slides/0/tags", json={"tags": ["x"]},
+                      headers={"origin": "https://evil.example.com"}).status_code == 403
+
+
+def test_add_source_with_subfolder_choice_and_change_it(client, monkeypatch):
+    started = []
+    monkeypatch.setattr(main, "_start_indexing", started.append)
+    flat = client.post("/api/sources", json={"path": "/tmp/flat", "domain": "D", "recursive": False}).json()
+    deep = client.post("/api/sources", json={"path": "/tmp/deep", "domain": "D"}).json()
+    assert flat["recursive"] is False and deep["recursive"] is True
+
+    r = client.patch(f"/api/sources/{flat['id']}", json={"recursive": True})
+    assert r.status_code == 200 and r.json()["recursive"] is True
+    assert started == [flat["id"], deep["id"], flat["id"]]  # scope change re-indexes
+    assert client.patch("/api/sources/999", json={"recursive": True}).status_code == 404
+
+
+def test_storage_endpoint_and_reveal_allow_list(client, monkeypatch):
+    info = client.get("/api/storage").json()
+    assert info["db_path"] == str(db.DB_PATH) and info["thumbnails_dir"] == str(db.THUMB_DIR)
+    assert "drafts_dir" in info
+
+    opened = []
+    monkeypatch.setattr(main.file_opener, "open_file", opened.append)
+    assert client.post("/api/storage/thumbnails/reveal").status_code == 200
+    assert opened == [str(db.THUMB_DIR)]
+    assert client.post("/api/storage/..%2Fetc/reveal").status_code in (404, 405)
+    assert client.post("/api/storage/passwd/reveal").status_code == 404
+    assert opened == [str(db.THUMB_DIR)]
+
+
+def test_ui_assets_are_revalidated_so_updates_show_up(client):
+    assert client.get("/app.js").headers["cache-control"] == "no-cache"
+    assert client.get("/").headers["cache-control"] == "no-cache"

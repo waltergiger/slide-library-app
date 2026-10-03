@@ -58,7 +58,12 @@ async def _validate_host_and_origin(request: Request, call_next):
         origin = request.headers.get("origin")
         if origin and _hostname(urlsplit(origin).netloc) not in ALLOWED_HOSTS:
             return JSONResponse({"detail": "Cross-origin request blocked"}, status_code=403)
-    return await call_next(request)
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        # The UI has no build step or hashed filenames, so without this the
+        # browser may keep running a stale app.js after an update.
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 @app.get("/api/renderers")
@@ -80,6 +85,11 @@ def api_renderers_recheck():
 class SourceIn(BaseModel):
     path: str
     domain: str
+    recursive: bool = True
+
+
+class SourceUpdateIn(BaseModel):
+    recursive: bool
 
 
 def _source_dict(row) -> dict:
@@ -91,6 +101,7 @@ def _source_dict(row) -> dict:
         "error_message": row["error_message"],
         "files_total": row["files_total"],
         "files_done": row["files_done"],
+        "recursive": bool(row["recursive"]),
         "last_indexed_at": row["last_indexed_at"],
     }
 
@@ -106,7 +117,17 @@ def api_add_source(body: SourceIn):
     domain = body.domain.strip() or "Uncategorized"
     if not path:
         raise HTTPException(400, "path is required")
-    source_id = db.add_source(path, domain)
+    source_id = db.add_source(path, domain, body.recursive)
+    _start_indexing(source_id)
+    return _source_dict(db.get_source(source_id))
+
+
+@app.patch("/api/sources/{source_id}")
+def api_update_source(source_id: int, body: SourceUpdateIn):
+    """Changing the subfolder scope re-indexes, which also drops files that
+    fall outside the new scope."""
+    if not db.set_source_recursive(source_id, body.recursive):
+        raise HTTPException(404, "source not found")
     _start_indexing(source_id)
     return _source_dict(db.get_source(source_id))
 
@@ -247,6 +268,24 @@ def api_set_favorite(file_id: int, slide_index: int, body: FavoriteIn):
     return {"ok": True, "favorite": body.favorite}
 
 
+class TagsIn(BaseModel):
+    # Bounded so a malformed client can't store an unbounded blob; db.normalize_tags trims further.
+    tags: list[str] = Field(max_length=100)
+
+
+@app.put("/api/decks/{file_id}/slides/{slide_index}/tags")
+def api_set_tags(file_id: int, slide_index: int, body: TagsIn):
+    tags = db.set_slide_tags(file_id, slide_index, body.tags)
+    if tags is None:
+        raise HTTPException(404, "slide not found")
+    return {"ok": True, "tags": tags}
+
+
+@app.get("/api/favorites/tags")
+def api_favorite_tags():
+    return db.list_favorite_tags()
+
+
 @app.get("/api/favorites")
 def api_favorites(domain: str | None = None, q: str | None = None):
     rows = db.list_favorites(domain, q)
@@ -260,6 +299,8 @@ def api_favorites(domain: str | None = None, q: str | None = None):
             "ext": r["ext"],
             "thumb_url": f"/api/thumb/{r['thumb_file']}" if r["thumb_file"] else None,
             "favorite": True,
+            "favorited_at": r["favorited_at"],
+            "tags": db.parse_tags(r["tags"]),
         }
         for r in rows
     ]
@@ -282,6 +323,7 @@ def api_search(q: str):
             "ext": r["ext"],
             "thumb_url": f"/api/thumb/{r['thumb_file']}" if r["thumb_file"] else None,
             "favorite": bool(r["favorite"]),
+            "tags": db.parse_tags(r["tags"]),
         }
         for r in rows
     ]
@@ -379,6 +421,33 @@ class SettingsIn(BaseModel):
 @app.get("/api/settings")
 def api_get_settings():
     return settings.get()
+
+
+@app.get("/api/storage")
+def api_storage():
+    return {**db.storage_info(), "drafts_dir": settings.get()["drafts_path"]}
+
+
+_REVEALABLE = {"data": lambda: db.DATA_DIR, "thumbnails": lambda: db.THUMB_DIR,
+               "drafts": lambda: Path(settings.get()["drafts_path"]).expanduser()}
+
+
+@app.post("/api/storage/{which}/reveal")
+def api_reveal_storage(which: str):
+    """Opens one of the app's own storage folders in Finder/Explorer.
+
+    Security: the folder is chosen from a fixed allow-list by key, never from a
+    client-supplied path, and the Host/Origin middleware blocks other sites."""
+    if which not in _REVEALABLE:
+        raise HTTPException(404, "unknown storage location")
+    folder = _REVEALABLE[which]()
+    if not folder.is_dir():
+        raise HTTPException(404, f"Folder does not exist yet: {folder}")
+    try:
+        file_opener.open_file(str(folder))
+    except file_opener.OpenFailed as exc:
+        raise HTTPException(500, f"Couldn't open {folder}: {exc}") from exc
+    return {"ok": True, "path": str(folder)}
 
 
 @app.put("/api/settings")
