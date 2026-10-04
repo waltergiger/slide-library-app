@@ -475,13 +475,70 @@ def list_domains() -> list[dict]:
     return out
 
 
-def list_decks(domain: str | None, query: str | None, favorites_only: bool = False) -> list[sqlite3.Row]:
+def _sep_of(path: str) -> str:
+    # Paths are stored as the OS reported them; a UNC/Windows path uses "\".
+    return "\\" if "\\" in path and "/" not in path else "/"
+
+
+def _split(path: str) -> list[str]:
+    return [p for p in path.split(_sep_of(path)) if p]
+
+
+def folder_like(folder: str) -> str:
+    """LIKE pattern matching every file inside `folder` or its subfolders."""
+    sep = _sep_of(folder)
+    return _like_pattern_prefix(folder.rstrip(sep) + sep)
+
+
+def _like_pattern_prefix(prefix: str) -> str:
+    return prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def list_folder_tree() -> list[dict]:
+    """One tree per source directory, built from the indexed file paths.
+    Each node counts the decks in it *and* below it, matching what selecting
+    the folder shows."""
+    conn = get_conn()
+    trees = []
+    for src in conn.execute("SELECT id, path, domain FROM sources ORDER BY path COLLATE NOCASE"):
+        root_path = src["path"]
+        sep = _sep_of(root_path)
+        root = {"name": _split(root_path)[-1] if _split(root_path) else root_path,
+                "path": root_path.rstrip(sep) or root_path, "domain": src["domain"], "count": 0, "children": {}}
+        root_parts = _split(root_path)
+        for f in conn.execute("SELECT path FROM files WHERE source_id = ?", (src["id"],)):
+            parts = _split(f["path"])
+            if parts[:len(root_parts)] != root_parts:
+                continue
+            node = root
+            node["count"] += 1
+            for name in parts[len(root_parts):-1]:  # directories between the root and the file
+                child = node["children"].get(name)
+                if child is None:
+                    child = {"name": name, "path": node["path"] + sep + name, "count": 0, "children": {}}
+                    node["children"][name] = child
+                node = child
+                node["count"] += 1
+        trees.append(_finish_node(root))
+    return trees
+
+
+def _finish_node(node: dict) -> dict:
+    node["children"] = [_finish_node(c) for c in sorted(node["children"].values(), key=lambda c: c["name"].casefold())]
+    return node
+
+
+def list_decks(domain: str | None, query: str | None, favorites_only: bool = False,
+               folder: str | None = None) -> list[sqlite3.Row]:
     conn = get_conn()
     sql = "SELECT * FROM files"
     clauses, params = [], []
     if domain and domain != "All domains":
         clauses.append("domain = ?")
         params.append(domain)
+    if folder:
+        clauses.append("path LIKE ? ESCAPE '\\'")
+        params.append(folder_like(folder))
     if query:
         clauses.append(
             "id IN (SELECT file_id FROM slides WHERE id IN (SELECT rowid FROM slides_fts WHERE slides_fts MATCH ?) "
@@ -519,26 +576,31 @@ def _fts_query(q: str) -> str:
     return " ".join(f'"{t}"*' for t in tokens) or '""'
 
 
-def search_slides(query: str, limit: int = 40) -> list[sqlite3.Row]:
+def search_slides(query: str, limit: int = 40, folder: str | None = None) -> list[sqlite3.Row]:
+    # Folder is filtered in SQL, not by the caller, so the LIMIT applies to in-folder hits only.
     conn = get_conn()
-    sql = """
+    folder_sql, params = ("AND files.path LIKE ? ESCAPE '\\'", [folder_like(folder)]) if folder else ("", [])
+    sql = f"""
         SELECT slides.*, files.title AS deck_title, files.domain AS domain, files.ext AS ext, files.path AS file_path
         FROM slides_fts
         JOIN slides ON slides.id = slides_fts.rowid
         JOIN files ON files.id = slides.file_id
-        WHERE slides_fts MATCH ?
+        WHERE slides_fts MATCH ? {folder_sql}
         ORDER BY rank
         LIMIT ?
     """
-    return conn.execute(sql, (_fts_query(query), limit)).fetchall()
+    return conn.execute(sql, (_fts_query(query), *params, limit)).fetchall()
 
 
-def list_favorites(domain: str | None = None, query: str | None = None) -> list[sqlite3.Row]:
+def list_favorites(domain: str | None = None, query: str | None = None, folder: str | None = None) -> list[sqlite3.Row]:
     conn = get_conn()
     clauses, params = ["slides.favorite = 1"], []
     if domain and domain != "All domains":
         clauses.append("files.domain = ?")
         params.append(domain)
+    if folder:
+        clauses.append("files.path LIKE ? ESCAPE '\\'")
+        params.append(folder_like(folder))
     if query and query.strip():
         clauses.append(
             "(slides.id IN (SELECT rowid FROM slides_fts WHERE slides_fts MATCH ?) "

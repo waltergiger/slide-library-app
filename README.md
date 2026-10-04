@@ -93,6 +93,12 @@ changed later on each source row, which re-indexes that source. Click
 **Re-index** any time after files change on disk — only new or changed
 files are reprocessed, so it's fast after the first run.
 
+The **Domains | Folders** switch at the top of the sidebar changes how you
+browse: by domain, or by the real folder structure of each source directory
+(expand/collapse with +/-). Selecting a folder shows the decks in it and in
+all its subfolders; search, favorites and the file-type filters apply within
+it. The chosen view and the open folders are remembered per browser.
+
 Then: browse by domain, search across every deck's actual slide text, open
 a deck to see its slides, then drag slides (from a deck, from search hits
 or from your favorites) straight into the **deck panel** on the right, and

@@ -190,6 +190,11 @@ def api_domains():
     return db.list_domains()
 
 
+@app.get("/api/folders")
+def api_folders():
+    return db.list_folder_tree()
+
+
 # ------------------------------------------------------------------- decks --
 
 def _deck_dict(row) -> dict:
@@ -205,8 +210,9 @@ def _deck_dict(row) -> dict:
 
 
 @app.get("/api/decks")
-def api_list_decks(domain: str | None = None, q: str | None = None, favorites_only: bool = False):
-    return [_deck_dict(r) for r in db.list_decks(domain, q, favorites_only=favorites_only)]
+def api_list_decks(domain: str | None = None, q: str | None = None, favorites_only: bool = False,
+                   folder: str | None = None):
+    return [_deck_dict(r) for r in db.list_decks(domain, q, favorites_only=favorites_only, folder=folder)]
 
 
 @app.get("/api/decks/{file_id}")
@@ -287,8 +293,8 @@ def api_favorite_tags():
 
 
 @app.get("/api/favorites")
-def api_favorites(domain: str | None = None, q: str | None = None):
-    rows = db.list_favorites(domain, q)
+def api_favorites(domain: str | None = None, q: str | None = None, folder: str | None = None):
+    rows = db.list_favorites(domain, q, folder)
     return [
         {
             "file_id": r["file_id"],
@@ -309,10 +315,10 @@ def api_favorites(domain: str | None = None, q: str | None = None):
 # ----------------------------------------------------------------- search --
 
 @app.get("/api/search")
-def api_search(q: str):
+def api_search(q: str, folder: str | None = None):
     if not q.strip():
         return []
-    rows = db.search_slides(q)
+    rows = db.search_slides(q, folder=folder)
     return [
         {
             "file_id": r["file_id"],

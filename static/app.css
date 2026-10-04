@@ -94,6 +94,20 @@ input, select { font-family: inherit; }
 .nav-item .left { display: flex; align-items: center; gap: 9px; }
 .nav-count { font-size: 11.5px; font-weight: 600; padding: 2px 7px; border-radius: 999px; background: var(--inactive-count-bg); color: var(--text-secondary); }
 .nav-item.active .nav-count { background: rgba(255,255,255,0.18); color: #fff; }
+.seg.sidebar-seg { display: flex; width: 100%; height: 32px; margin-bottom: 10px; }
+.sidebar-seg .seg-btn { flex: 1; }
+.tree { display: flex; flex-direction: column; margin-top: 2px; }
+.tree-row { display: flex; align-items: center; gap: 2px; padding-left: calc(var(--depth) * 14px); min-width: 0; }
+.tree-pm, .tree-pm-spacer { width: 18px; height: 18px; flex-shrink: 0; }
+.tree-pm { display: flex; align-items: center; justify-content: center; border-radius: 5px; color: var(--text-secondary); border: 1px solid var(--border-strong); background: var(--surface); }
+.tree-pm:hover { color: var(--text); border-color: var(--text-secondary); }
+.tree-pm svg { width: 10px; height: 10px; }
+.tree-item { min-width: 0; padding: 7px 8px; font-size: 13.5px; }
+.tree-item .left { min-width: 0; }
+.tree-item svg { flex-shrink: 0; }
+.tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-empty { font-size: 12.5px; color: var(--text-tertiary); padding: 8px 10px; }
+.heading-path { margin-top: -14px; font-size: 12px; color: var(--text-tertiary); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-bottom { margin-top: auto; display: flex; flex-direction: column; gap: 12px; }
 .divider { height: 1px; background: var(--border); }
 .link-row { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 8px; color: var(--text-secondary); font-size: 13.5px; font-weight: 500; }

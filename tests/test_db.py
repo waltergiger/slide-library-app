@@ -209,3 +209,47 @@ def test_storage_info_reports_paths_and_thumbnail_usage(tmp_db):
     info = db.storage_info()
     assert info["db_path"] == str(db.DB_PATH) and info["thumbnails_dir"] == str(db.THUMB_DIR)
     assert info["thumbnail_count"] == 1 and info["thumbnails_bytes"] == 5 and info["db_bytes"] > 0
+
+
+def _folder_lib():
+    sid = db.add_source("/lib/Strategy", "Strategy")
+    a = add_indexed_file(sid, "/lib/Strategy/top.pptx", [("Top", "alpha")])
+    b = add_indexed_file(sid, "/lib/Strategy/2024/q1.pptx", [("Q1", "alpha beta")])
+    c = add_indexed_file(sid, "/lib/Strategy/2024/Board/b.pptx", [("Board", "alpha")])
+    d = add_indexed_file(sid, "/lib/Strategy/2024_old/x.pptx", [("Old", "alpha")])  # prefix lookalike of "2024"
+    return a, b, c, d
+
+
+def test_folder_tree_counts_decks_including_subfolders(tmp_db):
+    _folder_lib()
+    [root] = db.list_folder_tree()
+    assert (root["name"], root["path"], root["domain"], root["count"]) == ("Strategy", "/lib/Strategy", "Strategy", 4)
+    assert [(c["name"], c["count"]) for c in root["children"]] == [("2024", 2), ("2024_old", 1)]
+    board = root["children"][0]["children"][0]
+    assert (board["name"], board["path"], board["count"], board["children"]) == ("Board", "/lib/Strategy/2024/Board", 1, [])
+
+
+def test_folder_filter_includes_subfolders_but_not_lookalike_siblings(tmp_db):
+    a, b, c, d = _folder_lib()
+    assert {r["id"] for r in db.list_decks(None, None, folder="/lib/Strategy/2024")} == {b, c}
+    assert {r["id"] for r in db.list_decks(None, None, folder="/lib/Strategy/2024/")} == {b, c}
+    assert {r["id"] for r in db.list_decks(None, None, folder="/lib/Strategy")} == {a, b, c, d}
+    assert {r["file_id"] for r in db.search_slides("alpha", folder="/lib/Strategy/2024")} == {b, c}
+    db.set_slide_favorite(b, 0, True)
+    db.set_slide_favorite(d, 0, True)
+    assert [r["file_id"] for r in db.list_favorites(folder="/lib/Strategy/2024")] == [b]
+
+
+def test_folder_filter_treats_like_wildcards_literally(tmp_db):
+    sid = db.add_source("/x", "D")
+    add_indexed_file(sid, "/x/a_b/one.pptx", [("t", "a")])
+    add_indexed_file(sid, "/x/axb/two.pptx", [("t", "b")])
+    assert [r["title"] for r in db.list_decks(None, None, folder="/x/a_b")] == ["one"]
+
+
+def test_folder_tree_handles_windows_paths(tmp_db):
+    sid = db.add_source("\\\\share\\Decks", "D")
+    add_indexed_file(sid, "\\\\share\\Decks\\Sub\\a.pptx", [("t", "a")])
+    [root] = db.list_folder_tree()
+    assert root["count"] == 1 and root["children"][0]["path"] == "\\\\share\\Decks\\Sub"
+    assert len(db.list_decks(None, None, folder="\\\\share\\Decks\\Sub")) == 1

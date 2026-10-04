@@ -35,7 +35,7 @@
   };
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const APP_VERSION = "0.2.0";
+  const APP_VERSION = "0.3.0";
 
   // ---------------------------------------------------------------- state --
   const BUILDER_KEY = "slidelib-builder";
@@ -45,6 +45,8 @@
   const PANEL_W_KEY = "slidelib-panel-width";
   const LIBRARY_VIEW_KEY = "slidelib-library-view";
   const FAV_GROUP_KEY = "slidelib-fav-group";
+  const SIDEBAR_MODE_KEY = "slidelib-sidebar-mode";
+  const FOLDERS_OPEN_KEY = "slidelib-folders-open";
   const FAV_COLLAPSED_KEY = "slidelib-fav-collapsed";
 
   const readPref = (key) => { try { return localStorage.getItem(key); } catch (e) { return null; } };
@@ -80,6 +82,10 @@
     theme: (() => { try { return localStorage.getItem(THEME_KEY) || "dark"; } catch (e) { return "dark"; } })(),
     domains: [{ name: "All domains", count: 0 }],
     selectedDomain: "All domains",
+    sidebarMode: readPref(SIDEBAR_MODE_KEY) === "folders" ? "folders" : "domains",
+    folders: [],                // one tree per source: {name, path, domain, count, children}
+    selectedFolder: null,       // absolute folder path; null = all folders
+    foldersOpen: (() => { try { const v = JSON.parse(readPref(FOLDERS_OPEN_KEY) || "null"); return Array.isArray(v) ? new Set(v) : null; } catch (e) { return null; } })(),
     query: "",
     filters: { pptx: true, pdf: true, favoritesOnly: false },
     typesBeforeFavorites: null,
@@ -134,14 +140,30 @@
     return res.json();
   }
 
-  async function refreshDomains() { state.domains = await api("/api/domains"); }
+  async function refreshDomains() {
+    [state.domains, state.folders] = await Promise.all([api("/api/domains"), api("/api/folders").catch(() => [])]);
+    if (state.selectedFolder && !findFolder(state.folders, state.selectedFolder)) state.selectedFolder = null; // source removed or re-scoped
+    if (!state.foldersOpen) state.foldersOpen = new Set(state.folders.map((f) => f.path)); // first visit: roots open
+  }
+  function findFolder(nodes, path) {
+    for (const n of nodes) {
+      if (n.path === path) return n;
+      const hit = findFolder(n.children, path);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  // Each sidebar mode filters on its own; the other one is reset to "all" so they never combine invisibly.
+  const activeFolder = () => (state.sidebarMode === "folders" ? state.selectedFolder : null);
+  const activeDomain = () => (state.sidebarMode === "domains" ? state.selectedDomain : "All domains");
   // Favorites with no file type chosen lists the starred slides themselves;
   // choosing PPTX and/or PDF as well lists the decks that contain them.
   const favoriteSlidesMode = () => state.filters.favoritesOnly && !state.filters.pptx && !state.filters.pdf;
 
   async function refreshDecks() {
     const params = new URLSearchParams();
-    if (state.selectedDomain && state.selectedDomain !== "All domains") params.set("domain", state.selectedDomain);
+    if (activeDomain() !== "All domains") params.set("domain", activeDomain());
+    if (activeFolder()) params.set("folder", activeFolder());
     if (state.query.trim()) params.set("q", state.query.trim());
     if (favoriteSlidesMode()) {
       [state.favSlides, state.favTags] = await Promise.all([api(`/api/favorites?${params}`), api("/api/favorites/tags")]);
@@ -152,10 +174,10 @@
     // Slide-level hits are what you drag into the deck panel; decks alone can't be dragged.
     const [decks, slides] = await Promise.all([
       api(`/api/decks?${params}`),
-      q && !state.filters.favoritesOnly ? api(`/api/search?q=${encodeURIComponent(q)}`) : [],
+      q && !state.filters.favoritesOnly ? api(`/api/search?q=${encodeURIComponent(q)}${activeFolder() ? `&folder=${encodeURIComponent(activeFolder())}` : ""}`) : [],
     ]);
     state.decks = decks;
-    state.slideResults = state.selectedDomain === "All domains" ? slides : slides.filter((r) => r.domain === state.selectedDomain);
+    state.slideResults = activeDomain() === "All domains" ? slides : slides.filter((r) => r.domain === activeDomain());
   }
   async function refreshDrafts() { state.drafts = await api("/api/drafts"); }
   async function refreshRenderers() { state.renderers = await api("/api/renderers"); }
@@ -477,8 +499,37 @@
     </button>`;
   };
 
+  function sidebarModeToggle() {
+    const btn = (mode, label) => `<button type="button" class="seg-btn ${state.sidebarMode === mode ? "active" : ""}" data-action="setSidebarMode" data-mode="${mode}" aria-pressed="${state.sidebarMode === mode}">${label}</button>`;
+    return `<div class="seg sidebar-seg" role="group" aria-label="Browse by">${btn("domains", "Domains")}${btn("folders", "Folders")}</div>`;
+  }
+
+  function renderFolderNode(n, depth) {
+    const hasKids = n.children.length > 0;
+    const open = hasKids && state.foldersOpen.has(n.path);
+    const active = state.selectedFolder === n.path;
+    const toggle = hasKids
+      ? `<button type="button" class="tree-pm" data-action="toggleFolderOpen" data-path="${esc(n.path)}" aria-expanded="${open}" aria-label="${open ? "Collapse" : "Expand"} ${esc(n.name)}">${open ? ICON.minus : ICON.plus}</button>`
+      : `<span class="tree-pm-spacer"></span>`;
+    return `<div class="tree-row" style="--depth:${depth}">
+        ${toggle}
+        <button type="button" class="nav-item tree-item ${active ? "active" : ""}" data-action="selectFolder" data-path="${esc(n.path)}" title="${esc(n.path)}" aria-current="${active}">
+          <span class="left">${ICON.folder}<span class="tree-name">${esc(n.name)}</span></span>
+          <span class="nav-count">${n.count}</span>
+        </button>
+      </div>${open ? n.children.map((c) => renderFolderNode(c, depth + 1)).join("") : ""}`;
+  }
+
+  function renderFolderTree() {
+    const total = state.folders.reduce((n, f) => n + f.count, 0);
+    const all = `<button type="button" class="nav-item ${state.selectedFolder ? "" : "active"}" data-action="selectFolder" data-path="">
+        <span class="left">${ICON.folder}All folders</span><span class="nav-count">${total}</span></button>`;
+    if (!state.folders.length) return all + `<div class="tree-empty">No source directories yet.</div>`;
+    return all + `<div class="tree">${state.folders.map((f) => renderFolderNode(f, 0)).join("")}</div>`;
+  }
+
   function renderLibrary() {
-    const domainsHtml = state.domains.map((d) => {
+    const domainsHtml = state.sidebarMode === "folders" ? renderFolderTree() : state.domains.map((d) => {
       const active = d.name === state.selectedDomain;
       return `<button type="button" class="nav-item ${active ? "active" : ""}" data-action="selectDomain" data-value="${esc(d.name)}">
         <span class="left">${ICON.folder}${esc(d.name)}</span>
@@ -605,6 +656,12 @@
     return { count: slides.length, unit: "slide", html };
   }
 
+  function libraryHeading() {
+    if (state.sidebarMode === "domains") return state.selectedDomain;
+    const f = activeFolder() && findFolder(state.folders, activeFolder());
+    return f ? f.name : "All folders";
+  }
+
   function renderLibraryShell(domainsHtml, body, deckCount) {
     // Favorites-slide mode passes {count, unit, html}; deck mode passes html + deck count.
     const { count, unit, html } = typeof body === "string" ? { count: deckCount, unit: "deck", html: body } : body;
@@ -617,7 +674,7 @@
         </div>
         <div>
           <a href="#" class="link-row sidebar-manage-link" data-action="goto" data-view="sources">${ICON.plus} Manage sources</a>
-          <div class="nav-label">Domains</div>
+          ${sidebarModeToggle()}
           ${domainsHtml}
         </div>
         <div class="sidebar-bottom">
@@ -644,7 +701,8 @@
           </div>
         </div>
         ${filterRow()}
-        <div class="heading-row"><h1>${esc(state.selectedDomain)}</h1><span class="count">${count} ${unit}${count === 1 ? "" : "s"}</span></div>
+        <div class="heading-row"><h1>${esc(libraryHeading())}</h1><span class="count">${count} ${unit}${count === 1 ? "" : "s"}</span></div>
+        ${activeFolder() ? `<div class="heading-path" title="${esc(activeFolder())}">${esc(activeFolder())}</div>` : ""}
         ${html}
       </div>
       ${renderDeckPanel()}
@@ -1255,6 +1313,24 @@
       if (state.view === "library") { await Promise.all([refreshDomains(), refreshDecks()]); }
       if (state.view === "sources") { await refreshSources(); ensureSourcesPolling(); }
       if (state.view === "settings") { await refreshSettings(); }
+      return render();
+    }
+
+    if (action === "setSidebarMode") {
+      state.sidebarMode = el.dataset.mode === "folders" ? "folders" : "domains";
+      writePref(SIDEBAR_MODE_KEY, state.sidebarMode);
+      await refreshDecks();
+      return render();
+    }
+    if (action === "selectFolder") {
+      state.selectedFolder = el.dataset.path || null;
+      await refreshDecks();
+      return render();
+    }
+    if (action === "toggleFolderOpen") {
+      const p = el.dataset.path;
+      if (state.foldersOpen.has(p)) state.foldersOpen.delete(p); else state.foldersOpen.add(p);
+      writePref(FOLDERS_OPEN_KEY, JSON.stringify([...state.foldersOpen]));
       return render();
     }
 

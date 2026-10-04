@@ -145,3 +145,15 @@ def test_storage_endpoint_and_reveal_allow_list(client, monkeypatch):
 def test_ui_assets_are_revalidated_so_updates_show_up(client):
     assert client.get("/app.js").headers["cache-control"] == "no-cache"
     assert client.get("/").headers["cache-control"] == "no-cache"
+
+
+def test_folders_endpoint_and_folder_filters(client):
+    sid = db.add_source("/lib/S", "S")
+    a = add_indexed_file(sid, "/lib/S/a.pptx", [("A", "wealth")])
+    b = add_indexed_file(sid, "/lib/S/sub/b.pptx", [("B", "wealth")])
+    tree = client.get("/api/folders").json()
+    assert tree[0]["count"] == 2 and tree[0]["children"][0]["path"] == "/lib/S/sub"
+    assert [d["id"] for d in client.get("/api/decks", params={"folder": "/lib/S/sub"}).json()] == [b]
+    assert [h["file_id"] for h in client.get("/api/search", params={"q": "wealth", "folder": "/lib/S/sub"}).json()] == [b]
+    client.post(f"/api/decks/{a}/slides/0/favorite", json={"favorite": True})
+    assert client.get("/api/favorites", params={"folder": "/lib/S/sub"}).json() == []
