@@ -18,6 +18,10 @@ def tmp_db(tmp_path, monkeypatch):
     thumbs.mkdir()
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "library.db")
     monkeypatch.setattr(db, "THUMB_DIR", thumbs)
+    from app import settings
+    # Saved drafts are mirrored to disk; without this the tests would write
+    # into (and prune files from) the real data/drafts folder.
+    monkeypatch.setattr(settings, "DEFAULT_DRAFTS_PATH", tmp_path / "drafts")
     monkeypatch.setattr(db, "_local", threading.local())
     db.init_db()
     return tmp_path
