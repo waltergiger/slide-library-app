@@ -337,7 +337,8 @@ def test_windows_uses_com_via_powershell_with_paths_in_env_vars(tmp_path, monkey
     assert seen["env"]["SLIDELIB_IN"] == str(src)                 # via env: quotes/parentheses in names can't break the script
     script = seen["cmd"][-1]
     assert "Presentations.Open($env:SLIDELIB_IN, -1, -1, 0)" in script       # read-only, windowless
-    assert "ExportAsFixedFormat($env:SLIDELIB_OUT, 2, 2, 0, 1, 1, -1)" in script   # PDF, print quality, hidden slides included
+    assert "SlideShowTransition.Hidden = 0" in script                       # hidden slides kept so page N == slide N
+    assert "SaveAs($env:SLIDELIB_OUT, 32)" in script                         # 32 = ppSaveAsPDF
     assert "$wasRunning" in script and "-not $wasRunning" in script          # never quits the user's own PowerPoint
 
 

@@ -3,14 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="app-version" content="{{VERSION_LABEL}}">
 <title>Slide Library</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="/app.css?v=0.3.0">
+<link rel="stylesheet" href="/app.css?v={{CACHE_KEY}}">
 </head>
 <body>
 <div id="app"></div>
-<script src="/view-model.js?v=0.3.0"></script>
-<script src="/builder-model.js?v=0.3.0"></script>
-<script src="/app.js?v=0.3.0"></script>
+<script src="/view-model.js?v={{CACHE_KEY}}"></script>
+<script src="/builder-model.js?v={{CACHE_KEY}}"></script>
+<script src="/app.js?v={{CACHE_KEY}}"></script>
 </body>
 </html>

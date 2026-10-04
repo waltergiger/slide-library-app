@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import io
 import logging
 import os
@@ -9,11 +10,11 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, drafts, exporter, file_opener, file_picker, folder_picker, indexer, renderers, settings
+from . import db, drafts, exporter, file_opener, file_picker, folder_picker, indexer, renderers, settings, version
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -531,5 +532,21 @@ def api_delete_draft(draft_id: int):
 
 
 # -------------------------------------------------------------- static app --
+
+@app.get("/api/version")
+def api_version():
+    return version.get()
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/index.html", include_in_schema=False)
+def index_page():
+    # The version goes into the asset URLs too, so each release forces fresh
+    # app.js/app.css instead of relying on the browser to revalidate.
+    v = version.get()
+    page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    page = page.replace("{{VERSION_LABEL}}", html.escape(v["label"])).replace("{{CACHE_KEY}}", v["cache_key"])
+    return HTMLResponse(page)
+
 
 app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")

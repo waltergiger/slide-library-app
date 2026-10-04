@@ -128,8 +128,8 @@ class PowerPointMacEngine(Engine):
 # -------------------------------------------------------------- Windows ------
 
 # Open(FileName, ReadOnly=true, Untitled=true, WithWindow=false): read-only, windowless, no lock file.
-# ExportAsFixedFormat(Path, PDF, Intent=print, FrameSlides, HandoutOrder, OutputType=slides,
-#                     PrintHiddenSlides=true) — hidden slides must be included to keep page N == slide N.
+# Hidden slides are un-hidden in the read-only copy (never saved back) so page N == slide N, then
+# SaveAs(Path, ppSaveAsPDF=32) — ExportAsFixedFormat's optional COM args failed type coercion via PowerShell.
 # Quit only if we started PowerPoint and nothing else is open in it; the user's session is never closed.
 _POWERSHELL = r"""
 $ErrorActionPreference = 'Stop'

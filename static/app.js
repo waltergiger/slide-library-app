@@ -35,7 +35,8 @@
   };
 
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const APP_VERSION = "0.3.0";
+  // Injected by the server from the GitHub release tag (app/version.py); never hand-edited.
+  const APP_VERSION = ((document.querySelector('meta[name="app-version"]') || {}).content || "").replace(/^\{\{.*/, "") || "dev";
 
   // ---------------------------------------------------------------- state --
   const BUILDER_KEY = "slidelib-builder";

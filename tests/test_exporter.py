@@ -83,7 +83,15 @@ def test_pdf_and_chart_slides_become_full_bleed_pictures(library):
     for slide in prs.slides:
         shapes = list(slide.shapes)
         assert len(shapes) == 1 and shapes[0].shape_type == 13
-        assert shapes[0].width == exporter.SLIDE_WIDTH
+        assert shapes[0].width == prs.slide_width == exporter.ASPECT_RATIOS["16:9"]["width"]
+
+
+def test_aspect_ratio_option_sets_slide_size(library):
+    ids, _ = library
+    refs = [{"file_id": ids["pptx"], "slide_index": 0}]
+    prs = _reload(exporter.build_deck([{"name": "C", "slides": refs}], add_dividers=False, aspect_ratio="4:3"))
+    assert (prs.slide_width, prs.slide_height) == (exporter.ASPECT_RATIOS["4:3"]["width"], exporter.ASPECT_RATIOS["4:3"]["height"])
+    assert len(prs.slides) == 1  # the default placeholder slide is gone
 
 
 def test_each_source_deck_is_converted_once_per_export(library):

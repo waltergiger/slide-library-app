@@ -157,3 +157,13 @@ def test_folders_endpoint_and_folder_filters(client):
     assert [h["file_id"] for h in client.get("/api/search", params={"q": "wealth", "folder": "/lib/S/sub"}).json()] == [b]
     client.post(f"/api/decks/{a}/slides/0/favorite", json={"favorite": True})
     assert client.get("/api/favorites", params={"folder": "/lib/S/sub"}).json() == []
+
+
+def test_index_page_carries_the_release_version(client, monkeypatch):
+    info = main.version.build_info("v9.8.7-2-gabc1234", "0.0.0")
+    monkeypatch.setattr(main.version, "get", lambda: info)
+    page = client.get("/").text
+    assert '<meta name="app-version" content="9.8.7+2">' in page
+    assert '/app.js?v=9.8.7+2"' in page and "{{" not in page
+    assert client.get("/index.html").text == page
+    assert client.get("/api/version").json()["label"] == "9.8.7+2"

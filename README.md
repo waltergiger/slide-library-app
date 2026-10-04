@@ -259,6 +259,27 @@ node --test tests/js/*.test.js      # deck-panel reorder logic (Node 18+, no npm
 Tests use throwaway databases and never touch `data/`; the renderers are stubbed
 so they run without it.
 
+## Versions and releases
+
+The version in the sidebar comes from the GitHub release tag (`vX.Y.Z`),
+never from a hand-edited constant: in a git checkout the server reads the
+nearest tag (`git describe`); a ZIP download without `.git` uses the
+`VERSION` file. A build exactly on a release shows `v0.4.1`; unreleased
+commits on top show `v0.4.1+2`, and uncommitted edits add `(modified)`.
+`GET /api/version` returns the same information. Restart the app after
+pulling to pick up a new version.
+
+Cut a release with:
+
+```bash
+scripts/release.sh 0.4.2 "What changed"
+```
+
+It refuses to run on a dirty tree, an out-of-date branch or a version that
+isn't newer than the last tag; otherwise it runs the tests, writes `VERSION`,
+commits, creates the annotated tag and pushes both. A test fails if the
+`VERSION` file and the latest tag ever disagree.
+
 ## Project layout
 
 ```
