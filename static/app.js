@@ -58,7 +58,7 @@
   // The Builder is auto-kept in localStorage as a working copy (survives a
   // reload); "Save" additionally stores it server-side as a named deck that
   // can be reopened from any browser. `dirty` = edits since the last Save.
-  const emptyBuilder = () => ({ title: "", category: "", addDividers: true, chapters: [], draftId: null, dirty: false, savedAt: null });
+  const emptyBuilder = () => ({ title: "", category: "", addDividers: true, aspectRatio: "16:9", templatePath: "", chapters: [], draftId: null, dirty: false, savedAt: null });
 
   function loadBuilder() {
     try {
@@ -815,6 +815,23 @@
           <button type="button" class="btn btn-secondary btn-sm" data-action="newDeck">${ICON.plus} New</button>
         </div>
         <label class="panel-check"><input type="checkbox" data-bind="addDividers" ${bld.addDividers ? "checked" : ""}> Add a divider slide per chapter</label>
+        <div class="panel-settings">
+          <div class="panel-setting-row">
+            <label for="aspectRatio">Aspect ratio</label>
+            <select id="aspectRatio" class="input input-sm" data-bind="aspectRatio">
+              <option value="16:9" ${bld.aspectRatio === "16:9" ? "selected" : ""}>16:9 (Widescreen)</option>
+              <option value="4:3" ${bld.aspectRatio === "4:3" ? "selected" : ""}>4:3 (Standard)</option>
+            </select>
+          </div>
+          <div class="panel-setting-row">
+            <label for="builderTemplate">Template</label>
+            <div class="panel-template-row">
+              <input id="builderTemplate" class="input input-sm" type="text" placeholder="None (blank template)" value="${esc(bld.templatePath || "")}" data-bind="builderTemplate" readonly>
+              <button type="button" class="btn btn-secondary btn-sm" data-action="browseBuilderTemplate" ${state.browsing ? "disabled" : ""}>${ICON.folder}</button>
+              ${bld.templatePath ? `<button type="button" class="btn btn-secondary btn-sm" data-action="clearBuilderTemplate" title="Clear template">${ICON.x}</button>` : ""}
+            </div>
+          </div>
+        </div>
       </div>
       <div class="deck-panel-body">
         ${chaptersHtml}
@@ -1267,6 +1284,8 @@
     else if (name === "draftEditName") { state.editingDraft.name = v; }
     else if (name === "draftEditCategory") { state.editingDraft.category = v; }
     else if (name === "addDividers") { state.builder.addDividers = v; saveBuilder(); }
+    else if (name === "aspectRatio") { state.builder.aspectRatio = v; saveBuilder(); }
+    else if (name === "builderTemplate") { state.builder.templatePath = v; saveBuilder(); }
     else if (name === "newChapterName") { state._newChapterName = v; }
     else if (name === "chapterName") {
       const ch = state.builder.chapters.find((c) => c.id === el.dataset.chapter);
@@ -1445,6 +1464,8 @@
 
     if (action === "browseFolder") return browseFolder();
     if (action === "browseTemplate") return browseTemplate();
+    if (action === "browseBuilderTemplate") return browseBuilderTemplate();
+    if (action === "clearBuilderTemplate") return clearBuilderTemplate();
     if (action === "browseDraftsFolder") return browseDraftsFolder();
     if (action === "saveSettings") return saveSettings();
     if (action === "revealStorage") return revealStorage(el.dataset.which);
@@ -1500,6 +1521,25 @@
       if (path) state.settingsForm.template_path = path;
     } catch (err) { showToast(String(err.message || err), "error"); }
     finally { state.settingsBrowsing = false; render(); }
+  }
+
+  async function browseBuilderTemplate() {
+    state.browsing = true;
+    render();
+    try {
+      const { path } = await api("/api/browse-file", { method: "POST" });
+      if (path) {
+        state.builder.templatePath = path;
+        saveBuilder();
+      }
+    } catch (err) { showToast(String(err.message || err), "error"); }
+    finally { state.browsing = false; render(); }
+  }
+
+  function clearBuilderTemplate() {
+    state.builder.templatePath = "";
+    saveBuilder();
+    render();
   }
 
   async function browseDraftsFolder() {
@@ -1745,6 +1785,8 @@
         body: JSON.stringify({
           filename: state.builder.title || "New Deck",
           add_dividers: state.builder.addDividers,
+          aspect_ratio: state.builder.aspectRatio || "16:9",
+          template_path: state.builder.templatePath || null,
           chapters: state.builder.chapters.map((c) => ({
             name: c.name,
             slides: c.slides.map((s) => ({ file_id: s.file_id, slide_index: s.slide_index })),

@@ -111,6 +111,9 @@ def _copy_relationships(source_slide, new_slide) -> None:
                 rel_map[rel_id] = new_rid
             elif rel.reltype == _SLIDE_LAYOUT_RELTYPE:
                 continue
+            elif "notesSlide" in rel.reltype:
+                # Skip speaker notes - they're not needed in the exported deck
+                continue
             else:
                 # A relationship we do not copy leaves the source rId in the
                 # XML. PowerPoint may then show an empty icon or reject the

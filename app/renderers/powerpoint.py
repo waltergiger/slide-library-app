@@ -138,7 +138,12 @@ $app = New-Object -ComObject PowerPoint.Application
 $pres = $null
 try {
     $pres = $app.Presentations.Open($env:SLIDELIB_IN, -1, -1, 0)
-    $pres.ExportAsFixedFormat($env:SLIDELIB_OUT, 2, 2, 0, 1, 1, -1)
+    # First, unhide all slides to ensure page N = slide N
+    for ($i = 1; $i -le $pres.Slides.Count; $i++) {
+        $pres.Slides.Item($i).SlideShowTransition.Hidden = 0
+    }
+    # Export to PDF using SaveAs with PDF format (32 = ppSaveAsPDF)
+    $pres.SaveAs($env:SLIDELIB_OUT, 32)
 } finally {
     if ($pres) { $pres.Close() }
     if (-not $wasRunning -and $app.Presentations.Count -eq 0) { $app.Quit() }

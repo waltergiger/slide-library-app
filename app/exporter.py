@@ -19,20 +19,25 @@ from .pptx_copy import copy_slide_native, slide_has_unsupported_content, _pick_b
 
 log = logging.getLogger("slide-library.exporter")
 
-SLIDE_WIDTH = Emu(12192000)   # 13.333 in — 16:9 widescreen
-SLIDE_HEIGHT = Emu(6858000)   # 7.5 in
+# Aspect ratio presets
+ASPECT_RATIOS = {
+    "16:9": {"width": Emu(12192000), "height": Emu(6858000)},  # 13.333 in × 7.5 in
+    "4:3": {"width": Emu(9144000), "height": Emu(6858000)},    # 10 in × 7.5 in
+}
 ACCENT = "2B3A55"
 
 
-def build_deck(chapters: list[dict], add_dividers: bool = True, template_path: str | None = None) -> bytes:
+def build_deck(chapters: list[dict], add_dividers: bool = True, template_path: str | None = None, aspect_ratio: str = "16:9") -> bytes:
     target = Presentation(template_path) if template_path else Presentation()
-    if template_path:
-        for slide_id in list(target.slides._sldIdLst):
-            target.part.drop_rel(slide_id.rId)
-            target.slides._sldIdLst.remove(slide_id)
-    else:
-        target.slide_width = SLIDE_WIDTH
-        target.slide_height = SLIDE_HEIGHT
+    # Remove all existing slides (template slides or default slide)
+    for slide_id in list(target.slides._sldIdLst):
+        target.part.drop_rel(slide_id.rId)
+        target.slides._sldIdLst.remove(slide_id)
+    if not template_path:
+        # Apply aspect ratio only if no template is used
+        ratio = ASPECT_RATIOS.get(aspect_ratio, ASPECT_RATIOS["16:9"])
+        target.slide_width = ratio["width"]
+        target.slide_height = ratio["height"]
     blank_layout = _pick_blank_layout(target)
 
     with indexer.PdfRenderCache() as cache:
@@ -40,7 +45,7 @@ def build_deck(chapters: list[dict], add_dividers: bool = True, template_path: s
             name = (chapter.get("name") or "Untitled chapter").strip()
             slide_refs = chapter.get("slides", [])
             if add_dividers:
-                _add_divider(target, blank_layout, name, target.slide_width, target.slide_height)
+                _add_divider(target, blank_layout, name)
             for ref in slide_refs:
                 _add_one_slide(target, blank_layout, ref, cache)
 
@@ -87,7 +92,11 @@ def _paste_image_slide(target: Presentation, blank_layout, file_row, slide_index
     )
 
 
-def _add_divider(target: Presentation, blank_layout, name: str, width=SLIDE_WIDTH, height=SLIDE_HEIGHT) -> None:
+def _add_divider(target: Presentation, blank_layout, name: str, width=None, height=None) -> None:
+    if width is None:
+        width = target.slide_width
+    if height is None:
+        height = target.slide_height
     slide = target.slides.add_slide(blank_layout)
     for shape in list(slide.shapes):
         shape._element.getparent().remove(shape._element)

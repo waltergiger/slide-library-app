@@ -362,6 +362,7 @@ class ExportIn(BaseModel):
     add_dividers: bool = True
     chapters: list[Chapter]
     template_path: str | None = None
+    aspect_ratio: str = "16:9"
 
 
 @app.post("/api/export")
@@ -374,7 +375,7 @@ def api_export(body: ExportIn):
         template_path = body.template_path if body.template_path is not None else settings.get()["template_path"]
         if template_path:
             template_path = settings.validate_template_path(template_path)
-        data = exporter.build_deck(chapters, add_dividers=body.add_dividers, template_path=template_path or None)
+        data = exporter.build_deck(chapters, add_dividers=body.add_dividers, template_path=template_path or None, aspect_ratio=body.aspect_ratio)
     except Exception as exc:  # noqa: BLE001
         log.getChild("export").exception("export failed")
         raise HTTPException(500, f"Export failed: {exc}") from exc
