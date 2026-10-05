@@ -253,3 +253,35 @@ def test_folder_tree_handles_windows_paths(tmp_db):
     [root] = db.list_folder_tree()
     assert root["count"] == 1 and root["children"][0]["path"] == "\\\\share\\Decks\\Sub"
     assert len(db.list_decks(None, None, folder="\\\\share\\Decks\\Sub")) == 1
+
+
+def test_decks_record_who_added_them_and_keep_the_first_added_date(tmp_db):
+    sid = db.add_source("/x", "D", added_by="Walter Giger")
+    fid = add_indexed_file(sid, "/x/a.pptx", [("t", "a")])
+    first = db.get_file(fid)
+    assert first["added_by"] == "Walter Giger" and first["added_at"]
+    with db.get_conn() as c:
+        c.execute("UPDATE files SET added_at = '2020-01-01T00:00:00+00:00' WHERE id = ?", (fid,))
+    add_indexed_file(sid, "/x/a.pptx", [("t", "changed")])            # re-index
+    again = db.get_file(fid)
+    assert again["added_at"] == "2020-01-01T00:00:00+00:00" and again["added_by"] == "Walter Giger"
+
+
+def test_cover_is_first_slide_with_a_thumbnail(tmp_db):
+    sid = db.add_source("/x", "D")
+    fid = add_indexed_file(sid, "/x/a.pptx", [("t0", "a"), ("t1", "b")])
+    assert db.get_file(fid)["cover_thumb"] == "a-0.png"
+    assert db.list_decks(None, None)[0]["cover_thumb"] == "a-0.png"
+    nothumb = add_indexed_file(sid, "/x/b.pptx", [("t", "c")], thumbs=False)
+    assert db.get_file(nothumb)["cover_thumb"] is None
+
+
+def test_migration_backfills_added_at_and_adds_added_by(tmp_db):
+    conn = db.get_conn()
+    conn.executescript("PRAGMA foreign_keys=OFF; DROP TABLE files; CREATE TABLE files (id INTEGER PRIMARY KEY, source_id INTEGER, "
+                       "path TEXT, domain TEXT, title TEXT, ext TEXT, slide_count INTEGER, mtime REAL, size INTEGER, indexed_at TEXT);"
+                       "INSERT INTO files (path, indexed_at) VALUES ('/a.pptx', '2026-01-02T03:04:05+00:00');")
+    db._migrate(conn)
+    row = conn.execute("SELECT added_at, added_by FROM files").fetchone()
+    assert row["added_at"] == "2026-01-02T03:04:05+00:00" and row["added_by"] is None
+    assert "added_by" in {r["name"] for r in conn.execute("PRAGMA table_info(sources)")}

@@ -167,3 +167,25 @@ def test_index_page_carries_the_release_version(client, monkeypatch):
     assert '/app.js?v=9.8.7+2"' in page and "{{" not in page
     assert client.get("/index.html").text == page
     assert client.get("/api/version").json()["label"] == "9.8.7+2"
+
+
+def test_added_by_comes_from_the_browser_name_header_sanitised(client, monkeypatch):
+    monkeypatch.setattr(main, "_start_indexing", lambda sid: None)
+    from urllib.parse import quote
+    r = client.post("/api/sources", json={"path": "/tmp/a", "domain": "D"},
+                    headers={"X-Slidelib-User": quote("  Jürg\u0007  Müller  ")})
+    assert r.json()["added_by"] == "Jürg Müller"                      # decoded, control chars and extra spaces gone
+    long = client.post("/api/sources", json={"path": "/tmp/b", "domain": "D"}, headers={"X-Slidelib-User": "x" * 500})
+    assert len(long.json()["added_by"]) == 80
+    anon = client.post("/api/sources", json={"path": "/tmp/c", "domain": "D"})
+    assert anon.json()["added_by"] is None
+
+    sid = r.json()["id"]
+    fid = add_indexed_file(sid, "/tmp/a/deck.pptx", [("t", "x")])
+    deck = next(d for d in client.get("/api/decks").json() if d["id"] == fid)
+    assert deck["added_by"] == "Jürg Müller" and deck["added_at"] and deck["cover_url"] == "/api/thumb/deck-0.png"
+
+
+def test_me_reports_header_name_and_a_default(client):
+    me = client.get("/api/me", headers={"X-Slidelib-User": "Ann"}).json()
+    assert me["name"] == "Ann" and me["default_name"]

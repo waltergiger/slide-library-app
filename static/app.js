@@ -48,12 +48,14 @@
   const FAV_GROUP_KEY = "slidelib-fav-group";
   const SIDEBAR_MODE_KEY = "slidelib-sidebar-mode";
   const FOLDERS_OPEN_KEY = "slidelib-folders-open";
-  const FAV_COLLAPSED_KEY = "slidelib-fav-collapsed";
+  const COLLAPSED_KEY = "slidelib-collapsed";
+  const DECK_SORT_KEY = "slidelib-deck-sort";
+  const USER_KEY = "slidelib-user";
 
   const readPref = (key) => { try { return localStorage.getItem(key); } catch (e) { return null; } };
   const writePref = (key, value) => { try { localStorage.setItem(key, String(value)); } catch (e) { /* per-viewer convenience only */ } };
   const readCollapsed = () => {
-    try { const v = JSON.parse(readPref(FAV_COLLAPSED_KEY) || "[]"); return new Set(Array.isArray(v) ? v : []); } catch (e) { return new Set(); }
+    try { const v = JSON.parse(readPref(COLLAPSED_KEY) || "[]"); return new Set(Array.isArray(v) ? v : []); } catch (e) { return new Set(); }
   };
 
   // The Builder is auto-kept in localStorage as a working copy (survives a
@@ -94,7 +96,10 @@
     favSlides: [],
     favTags: [],                 // every tag in use on a favorite, for autocomplete
     favGroupBy: readPref(FAV_GROUP_KEY) === "date" ? "date" : "tags",
-    favCollapsed: readCollapsed(),
+    collapsed: readCollapsed(),  // keys of collapsed sections, namespaced "fav:…" / "deck:…"
+    deckSort: readPref(DECK_SORT_KEY) === "date" ? "date" : "domain",
+    userName: readPref(USER_KEY) || "",   // self-declared, per browser; shown as "added by"
+    userNameForm: "",
     tagEditing: null,            // {fileId, slideIndex} of the tile with an open tag input
     currentDeck: null,
     slideSelection: new Set(),
@@ -129,7 +134,8 @@
   // ------------------------------------------------------------------ api --
   async function api(path, opts) {
     const res = await fetch(path, {
-      headers: { "Content-Type": "application/json" },
+      // URI-encoded because header values must be Latin-1; names may not be.
+      headers: { "Content-Type": "application/json", ...(state.userName ? { "X-Slidelib-User": encodeURIComponent(state.userName) } : {}) },
       ...opts,
     });
     if (!res.ok) {
@@ -186,6 +192,7 @@
   async function refreshSettings() {
     [state.settings, state.storage] = await Promise.all([api("/api/settings"), api("/api/storage").catch(() => null)]);
     state.settingsForm = { ...state.settings };
+    state.userNameForm = state.userName;
   }
   async function loadDeck(id) {
     state.currentDeck = await api(`/api/decks/${id}`);
@@ -442,9 +449,24 @@
     render();
   }
 
-  function setFavCollapsed(keys, collapsed) {
-    keys.forEach((k) => (collapsed ? state.favCollapsed.add(k) : state.favCollapsed.delete(k)));
-    writePref(FAV_COLLAPSED_KEY, JSON.stringify([...state.favCollapsed]));
+  function setCollapsed(keys, collapsed) {
+    keys.forEach((k) => (collapsed ? state.collapsed.add(k) : state.collapsed.delete(k)));
+    writePref(COLLAPSED_KEY, JSON.stringify([...state.collapsed]));
+    render();
+  }
+
+  // Section keys currently on screen, so "Collapse all" only touches what the user sees.
+  let visibleSectionKeys = [];
+
+  function expandAllButton(keys, isCollapsed, action) {
+    const allCollapsed = keys.length > 0 && keys.every(isCollapsed);
+    return `<button type="button" class="link-btn" data-action="${action}" data-collapse="${allCollapsed ? "0" : "1"}"
+      aria-label="${allCollapsed ? "Expand all sections" : "Collapse all sections"}">${allCollapsed ? ICON.plus : ICON.minus} ${allCollapsed ? "Expand all" : "Collapse all"}</button>`;
+  }
+
+  function setDeckSort(mode) {
+    state.deckSort = mode === "date" ? "date" : "domain";
+    writePref(DECK_SORT_KEY, state.deckSort);
     render();
   }
 
@@ -521,12 +543,18 @@
       </div>${open ? n.children.map((c) => renderFolderNode(c, depth + 1)).join("") : ""}`;
   }
 
+  function folderPathsWithChildren(nodes) {
+    return nodes.flatMap((n) => (n.children.length ? [n.path, ...folderPathsWithChildren(n.children)] : []));
+  }
+
   function renderFolderTree() {
     const total = state.folders.reduce((n, f) => n + f.count, 0);
     const all = `<button type="button" class="nav-item ${state.selectedFolder ? "" : "active"}" data-action="selectFolder" data-path="">
         <span class="left">${ICON.folder}All folders</span><span class="nav-count">${total}</span></button>`;
     if (!state.folders.length) return all + `<div class="tree-empty">No source directories yet.</div>`;
-    return all + `<div class="tree">${state.folders.map((f) => renderFolderNode(f, 0)).join("")}</div>`;
+    const parents = folderPathsWithChildren(state.folders);
+    const toggleAll = parents.length ? `<div class="tree-tools">${expandAllButton(parents, (p) => !state.foldersOpen.has(p), "setAllFolders")}</div>` : "";
+    return all + toggleAll + `<div class="tree">${state.folders.map((f) => renderFolderNode(f, 0)).join("")}</div>`;
   }
 
   function renderLibrary() {
@@ -544,18 +572,16 @@
     const noTypeSelected = !state.filters.pptx && !state.filters.pdf;
     const visibleDecks = noTypeSelected ? [] : state.decks.filter((d) => typeVisible(d.ext));
 
-    const decksHtml = visibleDecks.map((d) => {
-      const b = badgeFor(d.ext);
-      return `<div class="deck-card" data-action="openDeck" data-id="${d.id}" role="link" tabindex="0" aria-label="Open deck ${esc(d.title)}">
-        <div class="deck-card-top">
-          <div class="badge ${b.cls}">${b.label}</div>
-          <span class="tag">${esc(d.domain)}</span>
-        </div>
-        <div class="deck-title">${esc(d.title)}</div>
-        <div class="deck-meta">${d.slide_count} slides</div>
-        ${fileLink(d)}
-      </div>`;
-    }).join("");
+    // Domain view sorts into collapsible sections; folder view is already scoped, so it stays one grid.
+    const sectioned = state.sidebarMode === "domains" && visibleDecks.length > 0;
+    let decksBody;
+    if (sectioned) {
+      const groups = state.deckSort === "date" ? ViewModel.groupByDate(visibleDecks, null, "added_at") : ViewModel.groupByDomain(visibleDecks);
+      visibleSectionKeys = groups.map((g) => "deck:" + g.key);
+      decksBody = groupToolbar("Sort by", "Sort decks by", [{ value: "domain", label: "Domain" }, { value: "date", label: "Date added" }],
+          state.deckSort, "setDeckSort", visibleSectionKeys)
+        + groups.map((g) => renderCollapsibleGroup(g, "deck:", "deck", renderDeckCard, "deck-grid")).join("");
+    }
 
     const emptyMessage = noTypeSelected
       ? "No file type selected — turn on PPTX or PDF above to see decks."
@@ -563,9 +589,11 @@
           ? "No favorited slides match these filters yet — star a few slides in a deck first."
           : (state.query ? `No decks match "${esc(state.query)}".` : "No decks indexed yet — add a source directory to get started."));
 
-    const decksBody = visibleDecks.length
-      ? `<div class="deck-grid ${state.libraryView === "list" ? "list-view" : ""}">${decksHtml}</div>`
-      : `<div class="empty-state">${ICON.search}<span style="font-size:14.5px;">${state.decks === null ? "Loading…" : emptyMessage}</span></div>`;
+    if (!sectioned) {
+      decksBody = visibleDecks.length
+        ? `<div class="deck-grid ${state.libraryView === "list" ? "list-view" : ""}">${[...visibleDecks].sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true })).map(renderDeckCard).join("")}</div>`
+        : `<div class="empty-state">${ICON.search}<span style="font-size:14.5px;">${state.decks === null ? "Loading…" : emptyMessage}</span></div>`;
+    }
 
     // Slide-level hits for a text search: these are what can be dragged into the deck panel.
     const slidesSection = state.slideResults.length && !noTypeSelected
@@ -573,6 +601,32 @@
     const body = slidesSection ? `${slidesSection}<div class="fav-group-head" style="margin-top:8px;"><span class="tag">Decks</span></div>${decksBody}` : decksBody;
 
     return renderLibraryShell(domainsHtml, body, visibleDecks.length);
+  }
+
+  const fmtDay = (iso) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+  const fmtTime = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+  function addedLine(d) {
+    if (!d.added_at && !d.added_by) return "";
+    const when = d.added_at ? (state.deckSort === "date" && state.sidebarMode === "domains" ? fmtTime(d.added_at) : fmtDay(d.added_at)) : "";
+    return `<div class="deck-added">Added ${esc(when)}${d.added_by ? ` by <strong>${esc(d.added_by)}</strong>` : ""}</div>`;
+  }
+
+  function renderDeckCard(d) {
+    const b = badgeFor(d.ext);
+    return `<div class="deck-card" data-action="openDeck" data-id="${d.id}" role="link" tabindex="0" aria-label="Open deck ${esc(d.title)}">
+      <div class="deck-cover">${d.cover_url ? `<img src="${esc(d.cover_url)}" alt="" loading="lazy" draggable="false">` : `<span>${b.label}</span>`}</div>
+      <div class="deck-card-body">
+        <div class="deck-card-top">
+          <div class="badge ${b.cls}">${b.label}</div>
+          <span class="tag">${esc(d.domain)}</span>
+        </div>
+        <div class="deck-title">${esc(d.title)}</div>
+        <div class="deck-meta">${d.slide_count} slides</div>
+        ${addedLine(d)}
+        ${fileLink(d)}
+      </div>
+    </div>`;
   }
 
   function filterRow() {
@@ -613,26 +667,28 @@
     return `<div class="tag-row">${chips}${control}</div>`;
   }
 
-  function favGroupToolbar(groups) {
-    const btn = (mode, label) => `<button type="button" class="seg-btn ${state.favGroupBy === mode ? "active" : ""}" data-action="setFavGroupBy" data-mode="${mode}" aria-pressed="${state.favGroupBy === mode}">${label}</button>`;
-    const allCollapsed = groups.length && groups.every((g) => state.favCollapsed.has(g.key));
+  // label, aria label, the {value,label} choices, current value and the action that switches it
+  function groupToolbar(label, aria, choices, current, action, keys) {
+    const btn = (c) => `<button type="button" class="seg-btn ${current === c.value ? "active" : ""}" data-action="${action}" data-mode="${c.value}" aria-pressed="${current === c.value}">${c.label}</button>`;
     return `<div class="fav-toolbar">
-      <span class="fav-toolbar-label">Group by</span>
-      <div class="seg" role="group" aria-label="Group favorites by">${btn("tags", "Tags")}${btn("date", "Date")}</div>
-      <button type="button" class="link-btn" data-action="${allCollapsed ? "expandAllFav" : "collapseAllFav"}">${allCollapsed ? "Expand all" : "Collapse all"}</button>
+      <span class="fav-toolbar-label">${label}</span>
+      <div class="seg" role="group" aria-label="${aria}">${choices.map(btn).join("")}</div>
+      ${expandAllButton(keys, (k) => state.collapsed.has(k), "setAllSections")}
     </div>`;
   }
 
-  function renderCollapsibleGroup(g) {
-    const collapsed = state.favCollapsed.has(g.key);
+  // ns namespaces the stored collapse state; unit/renderItem/gridClass describe the contents.
+  function renderCollapsibleGroup(g, ns, unit, renderItem, gridClass) {
+    const key = ns + g.key;
+    const collapsed = state.collapsed.has(key);
     const n = g.items.length;
     return `<section class="fav-group ${collapsed ? "collapsed" : ""}">
-      <button type="button" class="fav-group-toggle" data-action="toggleFavGroup" data-key="${esc(g.key)}" aria-expanded="${!collapsed}">
+      <button type="button" class="fav-group-toggle" data-action="toggleSection" data-key="${esc(key)}" aria-expanded="${!collapsed}">
         <span class="fav-group-pm" aria-hidden="true">${collapsed ? ICON.plus : ICON.minus}</span>
         <span class="tag ${g.key === "untagged" || g.key === "date:none" ? "tag-muted" : ""}">${esc(g.label)}</span>
-        <span class="count">${n} slide${n === 1 ? "" : "s"}</span>
+        <span class="count">${n} ${unit}${n === 1 ? "" : "s"}</span>
       </button>
-      ${collapsed ? "" : `<div class="fav-grid ${state.libraryView === "list" ? "list-view" : ""}">${g.items.map(renderSlideTile).join("")}</div>`}
+      ${collapsed ? "" : `<div class="${gridClass} ${state.libraryView === "list" ? "list-view" : ""}">${g.items.map(renderItem).join("")}</div>`}
     </section>`;
   }
 
@@ -650,10 +706,11 @@
       return { count: 0, unit: "slide", html: `<div class="empty-state">${ICON.starFill}<span style="font-size:14.5px;">${msg}</span></div>` };
     }
     const groups = state.favGroupBy === "date" ? ViewModel.groupByDate(slides) : ViewModel.groupByTag(slides);
-    state._favGroupKeys = groups.map((g) => g.key);
-    const html = favGroupToolbar(groups)
+    visibleSectionKeys = groups.map((g) => "fav:" + g.key);
+    const html = groupToolbar("Group by", "Group favorites by", [{ value: "tags", label: "Tags" }, { value: "date", label: "Date" }],
+        state.favGroupBy, "setFavGroupBy", visibleSectionKeys)
       + `<datalist id="favTagOptions">${state.favTags.map((t) => `<option value="${esc(t.name)}">`).join("")}</datalist>`
-      + groups.map(renderCollapsibleGroup).join("");
+      + groups.map((g) => renderCollapsibleGroup(g, "fav:", "slide", renderSlideTile, "fav-grid")).join("");
     return { count: slides.length, unit: "slide", html };
   }
 
@@ -680,6 +737,10 @@
         </div>
         <div class="sidebar-bottom">
           <div class="divider"></div>
+          <a href="#" class="link-row sidebar-user" data-action="goto" data-view="settings" title="Shown as “added by” on what you add — change in Settings">
+            <span class="avatar" aria-hidden="true">${esc((state.userName || "?").trim().charAt(0).toUpperCase())}</span>
+            <span class="sidebar-user-name">${esc(state.userName || "Set your name")}</span>
+          </a>
         </div>
       </div>
       <div class="main">
@@ -1026,6 +1087,7 @@
           <div class="meta-line">
             <span class="tag">${esc(s.domain)}</span>
             ${chip}
+            <span class="source-added">Added ${s.created_at ? esc(fmtDay(s.created_at)) : ""}${s.added_by ? ` by <strong>${esc(s.added_by)}</strong>` : ""}</span>
             <label class="panel-check" title="Re-indexes the directory when changed"><input type="checkbox" data-bind="sourceRecursiveRow" data-id="${s.id}" ${s.recursive ? "checked" : ""} ${s.status === "indexing" || s.status === "pending" ? "disabled" : ""}> Include subfolders</label>
             <span style="font-size:12px;color:var(--text-secondary);">${statsLine}</span>
           </div>
@@ -1094,6 +1156,13 @@
         </div>
       </div>
       <div class="settings-list">
+        <section class="settings-section">
+          <div class="settings-section-head"><div><h2>Your name</h2><p>Shown as “added by” on source directories and decks you add. Stored in this browser only — it identifies, it doesn’t log you in.</p></div></div>
+          <div class="field">
+            <label for="userName">Name</label>
+            <input id="userName" class="input" type="text" maxlength="80" placeholder="First Last" value="${esc(state.userNameForm)}" data-bind="userName">
+          </div>
+        </section>
         <section class="settings-section">
           <div class="settings-section-head"><div><h2>PowerPoint export template</h2><p>New exports start from this file. Leave it empty to use the standard blank presentation.</p></div></div>
           <div class="field">
@@ -1297,6 +1366,7 @@
     else if (name === "sourceRecursiveRow") { setSourceRecursive(Number(el.dataset.id), v); }
     else if (name === "templatePath") { state.settingsForm.template_path = v; }
     else if (name === "draftsPath") { state.settingsForm.drafts_path = v; }
+    else if (name === "userName") { state.userNameForm = v; }
     else if (name.startsWith("filter-")) {
       const key = name.slice("filter-".length);
       state.filters[key] = v;
@@ -1381,8 +1451,15 @@
     }
 
     if (action === "setFavGroupBy") return setFavGroupBy(el.dataset.mode);
-    if (action === "toggleFavGroup") return setFavCollapsed([el.dataset.key], !state.favCollapsed.has(el.dataset.key));
-    if (action === "collapseAllFav" || action === "expandAllFav") return setFavCollapsed(state._favGroupKeys || [], action === "collapseAllFav");
+    if (action === "toggleSection") return setCollapsed([el.dataset.key], !state.collapsed.has(el.dataset.key));
+    if (action === "setAllSections") return setCollapsed(visibleSectionKeys, el.dataset.collapse === "1");
+    if (action === "setDeckSort") return setDeckSort(el.dataset.mode);
+    if (action === "setAllFolders") {
+      const parents = folderPathsWithChildren(state.folders);
+      parents.forEach((p) => (el.dataset.collapse === "1" ? state.foldersOpen.delete(p) : state.foldersOpen.add(p)));
+      writePref(FOLDERS_OPEN_KEY, JSON.stringify([...state.foldersOpen]));
+      return render();
+    }
     if (action === "addTagStart") {
       state.tagEditing = { fileId: Number(el.dataset.fileId), slideIndex: Number(el.dataset.index) };
       focusTarget = "tag";
@@ -1558,6 +1635,9 @@
     state.settingsSaving = true;
     render();
     try {
+      state.userName = state.userNameForm.split(/\s+/).filter(Boolean).join(" ").slice(0, 80);
+      state.userNameForm = state.userName;
+      writePref(USER_KEY, state.userName);
       state.settings = await api("/api/settings", { method: "PUT", body: JSON.stringify(state.settingsForm) });
       state.settingsForm = { ...state.settings };
       showToast("Settings saved.");
@@ -1819,6 +1899,12 @@
   (async function init() {
     applyTheme();
     applyLayout();
+    if (!state.userName) {
+      try {
+        state.userName = (await api("/api/me")).default_name || "";
+        writePref(USER_KEY, state.userName);
+      } catch (e) { /* server unreachable: reported below */ }
+    }
     document.getElementById("app").innerHTML = `<div style="padding:40px;color:var(--text-secondary);">Loading your library…</div>`;
     try {
       await Promise.all([refreshDomains(), refreshDecks(), refreshSources(), refreshSettings(), refreshDrafts().catch(() => {}),

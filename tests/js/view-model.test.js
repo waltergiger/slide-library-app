@@ -107,3 +107,19 @@ test("groupByDate groups by local day, newest first, undated last", () => {
   assert.deepEqual(g[2].items, [old]);
   assert.deepEqual(g[3].items, [none, bad]);
 });
+
+test("groupByDate can group on any timestamp field", () => {
+  const now = new Date(2026, 9, 5, 12);
+  const a = { added_at: new Date(2026, 9, 5, 9).toISOString() }, b = { added_at: new Date(2026, 9, 1, 9).toISOString() };
+  const g = V.groupByDate([b, a], now, "added_at");
+  assert.equal(g[0].label, "Today");
+  assert.deepEqual(g.map((x) => x.items), [[a], [b]]);
+});
+
+test("groupByDomain sorts sections and decks naturally, ignoring case", () => {
+  const d = (domain, title) => ({ domain, title });
+  const g = V.groupByDomain([d("strategy", "Deck 10"), d("Architecture", "b"), d("strategy", "Deck 9"), d("Architecture", "A")]);
+  assert.deepEqual(g.map((x) => x.label), ["Architecture", "strategy"]);
+  assert.deepEqual(g[0].items.map((x) => x.title), ["A", "b"]);
+  assert.deepEqual(g[1].items.map((x) => x.title), ["Deck 9", "Deck 10"]);
+});

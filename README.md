@@ -93,6 +93,20 @@ changed later on each source row, which re-indexes that source. Click
 **Re-index** any time after files change on disk — only new or changed
 files are reprocessed, so it's fast after the first run.
 
+Every deck card shows its first slide as a cover image, plus when it was
+added and by whom. In domain view, **Sort by Domain | Date added** groups the
+decks into collapsible sections — by domain (A–Z) or by the day they were
+first indexed (newest first, with the time and who added them). Every set of
+collapsible sections — deck sections, favorites, the sidebar folder tree —
+has an **Expand all / Collapse all** button.
+
+**Who added what**: each browser has a name (Settings → *Your name*; it
+defaults to this computer's account name and is shown at the bottom of the
+sidebar). It is sent with every request and recorded on the source
+directories you add and on the decks indexed from them. It is a label, not a
+login — anyone can type any name — so put real authentication in front of
+the app before relying on it in a shared setup.
+
 The **Domains | Folders** switch at the top of the sidebar changes how you
 browse: by domain, or by the real folder structure of each source directory
 (expand/collapse with +/-). Selecting a folder shows the decks in it and in

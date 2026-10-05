@@ -4,10 +4,11 @@ import html
 import io
 import logging
 import os
+import re
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
@@ -48,6 +49,37 @@ _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 def _hostname(value: str) -> str:
     return (urlsplit("//" + value).hostname or "").lower() if value else ""
+
+
+USER_HEADER = "x-slidelib-user"
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def current_user(request: Request) -> str | None:
+    """The name the browser says it belongs to, for "added by" labels.
+
+    Security: this is self-declared attribution, not authentication — anyone
+    can send any name. It is decoded, stripped of control characters and
+    length-capped because it is stored and shown to other users. A real login
+    (e.g. at a reverse proxy) should replace it before relying on it."""
+    raw = request.headers.get(USER_HEADER)
+    if not raw:
+        return None
+    name = " ".join(_CONTROL.sub("", unquote(raw)).split())[:80]
+    return name or None
+
+
+def default_user_name() -> str:
+    """Suggested name for a browser that hasn't chosen one: the OS account's full name."""
+    try:
+        import pwd  # POSIX only
+        full = pwd.getpwuid(os.getuid()).pw_gecos.split(",")[0].strip()
+        if full:
+            return full
+    except (ImportError, KeyError):
+        pass
+    import getpass
+    return getpass.getuser()
 
 
 @app.middleware("http")
@@ -103,6 +135,8 @@ def _source_dict(row) -> dict:
         "files_total": row["files_total"],
         "files_done": row["files_done"],
         "recursive": bool(row["recursive"]),
+        "added_by": row["added_by"],
+        "created_at": row["created_at"],
         "last_indexed_at": row["last_indexed_at"],
     }
 
@@ -113,12 +147,12 @@ def api_list_sources():
 
 
 @app.post("/api/sources")
-def api_add_source(body: SourceIn):
+def api_add_source(body: SourceIn, request: Request):
     path = body.path.strip()
     domain = body.domain.strip() or "Uncategorized"
     if not path:
         raise HTTPException(400, "path is required")
-    source_id = db.add_source(path, domain, body.recursive)
+    source_id = db.add_source(path, domain, body.recursive, added_by=current_user(request))
     _start_indexing(source_id)
     return _source_dict(db.get_source(source_id))
 
@@ -206,6 +240,9 @@ def _deck_dict(row) -> dict:
         "ext": row["ext"],
         "slide_count": row["slide_count"],
         "indexed_at": row["indexed_at"],
+        "added_at": row["added_at"],
+        "added_by": row["added_by"],
+        "cover_url": f"/api/thumb/{row['cover_thumb']}" if row["cover_thumb"] else None,
         "path": row["path"],
     }
 
@@ -532,6 +569,11 @@ def api_delete_draft(draft_id: int):
 
 
 # -------------------------------------------------------------- static app --
+
+@app.get("/api/me")
+def api_me(request: Request):
+    return {"name": current_user(request), "default_name": default_user_name()}
+
 
 @app.get("/api/version")
 def api_version():

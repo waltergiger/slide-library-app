@@ -106,28 +106,44 @@
     return date.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
   }
 
-  /** One section per local calendar day the star was set, newest first. Stars
-   *  from before dates were recorded have no timestamp and go last. */
-  function groupByDate(slides, now) {
+  /** One section per local calendar day of `field` (default: when the star was
+   *  set), newest first. Items without a timestamp (e.g. stars from before dates
+   *  were recorded) go last. */
+  function groupByDate(slides, now, field) {
     now = now || new Date();
+    field = field || "favorited_at";
     const groups = new Map();
     const undated = [];
     (slides || []).forEach((s) => {
-      const d = s.favorited_at ? new Date(s.favorited_at) : null;
+      const d = s[field] ? new Date(s[field]) : null;
       if (!d || Number.isNaN(d.getTime())) { undated.push(s); return; }
       const key = "date:" + localDayKey(d);
       if (!groups.has(key)) groups.set(key, { key, label: dayLabel(d, now), items: [] });
       groups.get(key).items.push(s);
     });
     const out = [...groups.values()].sort((a, b) => (a.key < b.key ? 1 : -1));
-    out.forEach((g) => g.items.sort((a, b) => (a.favorited_at < b.favorited_at ? 1 : a.favorited_at > b.favorited_at ? -1 : 0)));
+    out.forEach((g) => g.items.sort((a, b) => (a[field] < b[field] ? 1 : a[field] > b[field] ? -1 : 0)));
     if (undated.length) out.push({ key: "date:none", label: "Earlier (no date recorded)", items: undated });
+    return out;
+  }
+
+  /** One section per domain, A–Z, decks A–Z inside. */
+  function groupByDomain(decks) {
+    const groups = new Map();
+    (decks || []).forEach((d) => {
+      const key = "domain:" + d.domain;
+      if (!groups.has(key)) groups.set(key, { key, label: d.domain, items: [] });
+      groups.get(key).items.push(d);
+    });
+    const byName = (a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true });
+    const out = [...groups.values()].sort((a, b) => byName(a.label, b.label));
+    out.forEach((g) => g.items.sort((a, b) => byName(a.title, b.title)));
     return out;
   }
 
   const api = {
     fileUrl, ZOOM_STEPS, DEFAULT_ZOOM, PANEL, normalizeZoom, stepZoom, maxPanelWidth, clampPanelWidth,
-    MAX_TAG_LEN, parseTagInput, mergeTags, groupByTag, groupByDate, dayLabel,
+    MAX_TAG_LEN, parseTagInput, mergeTags, groupByTag, groupByDate, groupByDomain, dayLabel,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ViewModel = api;

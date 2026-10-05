@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS sources (
     files_total INTEGER NOT NULL DEFAULT 0,
     files_done INTEGER NOT NULL DEFAULT 0,
     recursive INTEGER NOT NULL DEFAULT 1,         -- 1 = include subfolders, 0 = this folder only
+    added_by TEXT,                                -- self-declared name of who added the directory
     created_at TEXT NOT NULL,
     last_indexed_at TEXT
 );
@@ -43,7 +44,9 @@ CREATE TABLE IF NOT EXISTS files (
     slide_count INTEGER NOT NULL DEFAULT 0,
     mtime REAL NOT NULL,
     size INTEGER NOT NULL DEFAULT 0,
-    indexed_at TEXT
+    indexed_at TEXT,                              -- last (re-)index; changes on every re-index
+    added_at TEXT,                                -- first time the deck was indexed; never changes
+    added_by TEXT                                 -- who added the source it came in with
 );
 
 CREATE TABLE IF NOT EXISTS slides (
@@ -137,6 +140,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "recursive" not in source_cols:
         conn.execute("ALTER TABLE sources ADD COLUMN recursive INTEGER NOT NULL DEFAULT 1")
         conn.commit()
+    if "added_by" not in source_cols:
+        conn.execute("ALTER TABLE sources ADD COLUMN added_by TEXT")
+        conn.commit()
+    file_cols = {row["name"] for row in conn.execute("PRAGMA table_info(files)")}
+    if "added_at" not in file_cols:
+        conn.execute("ALTER TABLE files ADD COLUMN added_at TEXT")
+        conn.execute("UPDATE files SET added_at = indexed_at")  # best available guess for existing decks
+        conn.commit()
+    if "added_by" not in file_cols:
+        conn.execute("ALTER TABLE files ADD COLUMN added_by TEXT")
+        conn.commit()
     draft_cols = {row["name"] for row in conn.execute("PRAGMA table_info(drafts)")}
     if "category" not in draft_cols:
         conn.execute("ALTER TABLE drafts ADD COLUMN category TEXT")
@@ -178,11 +192,11 @@ def set_setting(key: str, value: str) -> None:
 
 # ---- sources -----------------------------------------------------------
 
-def add_source(path: str, domain: str, recursive: bool = True) -> int:
+def add_source(path: str, domain: str, recursive: bool = True, added_by: str | None = None) -> int:
     conn = get_conn()
     cur = conn.execute(
-        "INSERT INTO sources (path, domain, recursive, status, created_at) VALUES (?, ?, ?, 'pending', ?)",
-        (path, domain, 1 if recursive else 0, now()),
+        "INSERT INTO sources (path, domain, recursive, added_by, status, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
+        (path, domain, 1 if recursive else 0, added_by, now()),
     )
     conn.commit()
     return cur.lastrowid
@@ -326,9 +340,10 @@ def upsert_file(source_id, path, domain, title, ext, slide_count, mtime, size) -
         conn.execute("DELETE FROM slides WHERE file_id = ?", (file_id,))
     else:
         cur = conn.execute(
-            """INSERT INTO files (source_id, path, domain, title, ext, slide_count, mtime, size, indexed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (source_id, path, domain, title, ext, slide_count, mtime, size, now()),
+            """INSERT INTO files (source_id, path, domain, title, ext, slide_count, mtime, size, indexed_at,
+                                  added_at, added_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT added_by FROM sources WHERE id = ?))""",
+            (source_id, path, domain, title, ext, slide_count, mtime, size, now(), now(), source_id),
         )
         file_id = cur.lastrowid
         prior = PriorFile()
@@ -445,8 +460,13 @@ def prune_orphan_thumbnails() -> int:
     return len(orphans)
 
 
+# The first slide's thumbnail doubles as the deck's cover image.
+_COVER_SQL = ("(SELECT thumb_file FROM slides WHERE slides.file_id = files.id AND thumb_file IS NOT NULL "
+              "ORDER BY slide_index LIMIT 1) AS cover_thumb")
+
+
 def get_file(file_id: int) -> sqlite3.Row | None:
-    return get_conn().execute("SELECT * FROM files WHERE id = ?", (file_id,)).fetchone()
+    return get_conn().execute(f"SELECT files.*, {_COVER_SQL} FROM files WHERE id = ?", (file_id,)).fetchone()
 
 
 def unchanged(path: str, mtime: float, size: int) -> bool:
@@ -531,7 +551,7 @@ def _finish_node(node: dict) -> dict:
 def list_decks(domain: str | None, query: str | None, favorites_only: bool = False,
                folder: str | None = None) -> list[sqlite3.Row]:
     conn = get_conn()
-    sql = "SELECT * FROM files"
+    sql = f"SELECT files.*, {_COVER_SQL} FROM files"
     clauses, params = [], []
     if domain and domain != "All domains":
         clauses.append("domain = ?")
@@ -550,7 +570,7 @@ def list_decks(domain: str | None, query: str | None, favorites_only: bool = Fal
         clauses.append("id IN (SELECT file_id FROM slides WHERE favorite = 1)")
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
-    sql += " ORDER BY indexed_at DESC"
+    sql += " ORDER BY added_at DESC, title COLLATE NOCASE"
     return conn.execute(sql, params).fetchall()
 
 
