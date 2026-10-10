@@ -12,6 +12,20 @@ can't safely rebuild) come in as a full-bleed image of that slide instead.
 It runs entirely on your own machine — nothing is uploaded anywhere. The
 index (a SQLite database) and slide thumbnails live in `data/`.
 
+## System Requirements
+
+- **Python 3.10+**
+- **A slide renderer:** ensure LibreOffice or Microsoft PowerPoint is
+  installed on the system. If neither is there, install LibreOffice (free):
+  - macOS: `brew install --cask libreoffice`, or download from
+    [libreoffice.org](https://www.libreoffice.org/download/)
+  - Windows: `winget install TheDocumentFoundation.LibreOffice`, or download
+    from [libreoffice.org](https://www.libreoffice.org/download/)
+  - Linux (Debian/Ubuntu): `sudo apt install libreoffice`
+
+  Restart the app after installing; it detects the renderer automatically
+  (see [1. Install](#1-install) for how it chooses between them).
+
 ## 1. Install
 
 You need Python 3.10+ and **one slide renderer**: Microsoft PowerPoint
