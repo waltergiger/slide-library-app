@@ -5,30 +5,36 @@ const V = require("../../static/view-model.js");
 test("stepZoom moves one step and stops at both ends", () => {
   assert.equal(V.stepZoom(100, 1), 125);
   assert.equal(V.stepZoom(100, -1), 80);
-  assert.equal(V.stepZoom(200, 1), 200);
-  assert.equal(V.stepZoom(50, -1), 50);
+  assert.equal(V.stepZoom(300, 1), 300);
+  assert.equal(V.stepZoom(25, -1), 25);
 });
 
-test("stepZoom from a value between steps snaps first, so +/- never skip or stall", () => {
-  assert.equal(V.stepZoom(110, 1), 125);   // 110 -> 100 -> 125
-  assert.equal(V.stepZoom(90, -1), 65);    // 90 -> 80 -> 65
+test("stepZoom from a typed value between steps goes to the neighbouring step", () => {
+  assert.equal(V.stepZoom(110, 1), 125);
+  assert.equal(V.stepZoom(110, -1), 100);
+  assert.equal(V.stepZoom(90, -1), 80);
 });
 
-test("normalizeZoom rejects garbage and snaps stored values", () => {
+test("normalizeZoom rejects garbage and clamps typed values", () => {
   assert.equal(V.normalizeZoom(null), 100);
   assert.equal(V.normalizeZoom("abc"), 100);
   assert.equal(V.normalizeZoom(undefined), 100);
   assert.equal(V.normalizeZoom("150"), 150);
-  assert.equal(V.normalizeZoom(9999), 200);
-  assert.equal(V.normalizeZoom(-5), 50);
+  assert.equal(V.normalizeZoom(9999), 300);
+  assert.equal(V.normalizeZoom(-5), 25);
+  assert.equal(V.normalizeZoom("140%"), 140);
+  assert.equal(V.normalizeZoom(" 87 % "), 87);
+  assert.equal(V.normalizeZoom(140.6), 141);
 });
 
 test("every step is reachable from the default in both directions", () => {
   let z = V.DEFAULT_ZOOM;
-  for (let i = 0; i < 20; i++) z = V.stepZoom(z, 1);
-  assert.equal(z, 200);
-  for (let i = 0; i < 20; i++) z = V.stepZoom(z, -1);
-  assert.equal(z, 50);
+  const seen = new Set([z]);
+  for (let i = 0; i < 20; i++) seen.add((z = V.stepZoom(z, 1)));
+  assert.equal(z, V.ZOOM_MAX);
+  for (let i = 0; i < 20; i++) seen.add((z = V.stepZoom(z, -1)));
+  assert.equal(z, V.ZOOM_MIN);
+  assert.deepEqual([...seen].sort((a, b) => a - b), V.ZOOM_STEPS);
 });
 
 test("clampPanelWidth respects min, max and the space the library needs", () => {
@@ -122,4 +128,15 @@ test("groupByDomain sorts sections and decks naturally, ignoring case", () => {
   assert.deepEqual(g.map((x) => x.label), ["Architecture", "strategy"]);
   assert.deepEqual(g[0].items.map((x) => x.title), ["A", "b"]);
   assert.deepEqual(g[1].items.map((x) => x.title), ["Deck 9", "Deck 10"]);
+});
+
+test("previewSequence mirrors the export: dividers per chapter, missing slides skipped", () => {
+  const s = (t, missing) => ({ title: t, missing });
+  const chapters = [{ name: "Intro", slides: [s("a"), s("gone", true), s("b")] }, { name: "  ", slides: [] }, { name: "End", slides: [s("c")] }];
+  const withDiv = V.previewSequence(chapters, true);
+  assert.deepEqual(withDiv.pages.map((p) => (p.kind === "divider" ? "#" + p.chapter : p.slide.title)),
+    ["#Intro", "a", "b", "#Untitled chapter", "#End", "c"]);
+  assert.equal(withDiv.skipped, 1);
+  assert.deepEqual(V.previewSequence(chapters, false).pages.map((p) => p.slide.title), ["a", "b", "c"]);
+  assert.deepEqual(V.previewSequence([], true), { pages: [], skipped: 0 });
 });

@@ -4,18 +4,17 @@ import html
 import io
 import logging
 import os
-import re
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, drafts, exporter, file_opener, file_picker, folder_picker, indexer, renderers, settings, version
+from . import db, drafts, exporter, file_opener, file_picker, folder_picker, indexer, fullsize, renderers, settings, users, version
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -31,6 +30,9 @@ async def lifespan(_app: FastAPI):
     pruned = db.prune_orphan_thumbnails()  # safe here: no indexing thread exists yet
     if pruned:
         log.info("Removed %d orphaned thumbnails", pruned)
+    stale = fullsize.prune(db.get_conn().execute("SELECT path, mtime FROM files").fetchall())
+    if stale:
+        log.info("Removed %d outdated full-size previews", stale)
     yield
 
 
@@ -51,35 +53,14 @@ def _hostname(value: str) -> str:
     return (urlsplit("//" + value).hostname or "").lower() if value else ""
 
 
-USER_HEADER = "x-slidelib-user"
-_CONTROL = re.compile(r"[\x00-\x1f\x7f]")
-
-
 def current_user(request: Request) -> str | None:
-    """The name the browser says it belongs to, for "added by" labels.
-
-    Security: this is self-declared attribution, not authentication — anyone
-    can send any name. It is decoded, stripped of control characters and
-    length-capped because it is stored and shown to other users. A real login
-    (e.g. at a reverse proxy) should replace it before relying on it."""
-    raw = request.headers.get(USER_HEADER)
-    if not raw:
-        return None
-    name = " ".join(_CONTROL.sub("", unquote(raw)).split())[:80]
-    return name or None
+    """The browser's self-declared name; see app/users.py for what it is (not) good for."""
+    return users.clean_name(request.headers.get(users.HEADER))
 
 
-def default_user_name() -> str:
-    """Suggested name for a browser that hasn't chosen one: the OS account's full name."""
-    try:
-        import pwd  # POSIX only
-        full = pwd.getpwuid(os.getuid()).pw_gecos.split(",")[0].strip()
-        if full:
-            return full
-    except (ImportError, KeyError):
-        pass
-    import getpass
-    return getpass.getuser()
+def favorites_owner(request: Request) -> str:
+    # A request without a name gets its own anonymous bucket rather than seeing someone else's stars.
+    return current_user(request) or ""
 
 
 @app.middleware("http")
@@ -248,17 +229,18 @@ def _deck_dict(row) -> dict:
 
 
 @app.get("/api/decks")
-def api_list_decks(domain: str | None = None, q: str | None = None, favorites_only: bool = False,
+def api_list_decks(request: Request, domain: str | None = None, q: str | None = None, favorites_only: bool = False,
                    folder: str | None = None):
-    return [_deck_dict(r) for r in db.list_decks(domain, q, favorites_only=favorites_only, folder=folder)]
+    rows = db.list_decks(domain, q, favorites_only=favorites_only, folder=folder, user=favorites_owner(request))
+    return [_deck_dict(r) for r in rows]
 
 
 @app.get("/api/decks/{file_id}")
-def api_get_deck(file_id: int):
+def api_get_deck(file_id: int, request: Request):
     row = db.get_file(file_id)
     if row is None:
         raise HTTPException(404, "deck not found")
-    slides = db.list_slides(file_id)
+    slides = db.list_slides(file_id, favorites_owner(request))
     return {
         **_deck_dict(row),
         "slides": [
@@ -266,7 +248,7 @@ def api_get_deck(file_id: int):
                 "index": s["slide_index"],
                 "title": s["title"],
                 "thumb_url": f"/api/thumb/{s['thumb_file']}" if s["thumb_file"] else None,
-                "favorite": bool(s["favorite"]),
+                "favorite": bool(s["is_favorite"]),
             }
             for s in slides
         ],
@@ -298,6 +280,29 @@ def api_open_deck_file(file_id: int):
     return {"ok": True, "path": str(path)}
 
 
+@app.get("/api/decks/{file_id}/slides/{slide_index}/image")
+def api_slide_image(file_id: int, slide_index: int, request: Request, w: int = 1600):
+    """Full-resolution PNG of one slide for the large view.
+
+    Security: the file is resolved from the index by id (never a client path),
+    and the width is clamped so a request can't ask for an enormous render."""
+    row = db.get_file(file_id)
+    if row is None:
+        raise HTTPException(404, "deck not found")
+    width = fullsize.clamp_width(w)
+    etag = f'"{file_id}-{int(row["mtime"])}-{slide_index}-{width}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    try:
+        png = fullsize.slide_png(row, slide_index, width)
+    except IndexError:
+        raise HTTPException(404, "slide not found") from None
+    except fullsize.Unavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    # Revalidated after 5 minutes: the ETag carries the file's mtime, so an edited deck re-renders.
+    return Response(png, media_type="image/png", headers={"ETag": etag, "Cache-Control": "private, max-age=300"})
+
+
 # --------------------------------------------------------------- favorites --
 
 class FavoriteIn(BaseModel):
@@ -305,8 +310,8 @@ class FavoriteIn(BaseModel):
 
 
 @app.post("/api/decks/{file_id}/slides/{slide_index}/favorite")
-def api_set_favorite(file_id: int, slide_index: int, body: FavoriteIn):
-    ok = db.set_slide_favorite(file_id, slide_index, body.favorite)
+def api_set_favorite(file_id: int, slide_index: int, body: FavoriteIn, request: Request):
+    ok = db.set_slide_favorite(file_id, slide_index, body.favorite, favorites_owner(request))
     if not ok:
         raise HTTPException(404, "slide not found")
     return {"ok": True, "favorite": body.favorite}
@@ -318,21 +323,21 @@ class TagsIn(BaseModel):
 
 
 @app.put("/api/decks/{file_id}/slides/{slide_index}/tags")
-def api_set_tags(file_id: int, slide_index: int, body: TagsIn):
-    tags = db.set_slide_tags(file_id, slide_index, body.tags)
+def api_set_tags(file_id: int, slide_index: int, body: TagsIn, request: Request):
+    tags = db.set_slide_tags(file_id, slide_index, body.tags, favorites_owner(request))
     if tags is None:
         raise HTTPException(404, "slide not found")
     return {"ok": True, "tags": tags}
 
 
 @app.get("/api/favorites/tags")
-def api_favorite_tags():
-    return db.list_favorite_tags()
+def api_favorite_tags(request: Request):
+    return db.list_favorite_tags(favorites_owner(request))
 
 
 @app.get("/api/favorites")
-def api_favorites(domain: str | None = None, q: str | None = None, folder: str | None = None):
-    rows = db.list_favorites(domain, q, folder)
+def api_favorites(request: Request, domain: str | None = None, q: str | None = None, folder: str | None = None):
+    rows = db.list_favorites(domain, q, folder, favorites_owner(request))
     return [
         {
             "file_id": r["file_id"],
@@ -343,8 +348,8 @@ def api_favorites(domain: str | None = None, q: str | None = None, folder: str |
             "ext": r["ext"],
             "thumb_url": f"/api/thumb/{r['thumb_file']}" if r["thumb_file"] else None,
             "favorite": True,
-            "favorited_at": r["favorited_at"],
-            "tags": db.parse_tags(r["tags"]),
+            "favorited_at": r["fav_at"],
+            "tags": db.parse_tags(r["fav_tags"]),
         }
         for r in rows
     ]
@@ -353,10 +358,10 @@ def api_favorites(domain: str | None = None, q: str | None = None, folder: str |
 # ----------------------------------------------------------------- search --
 
 @app.get("/api/search")
-def api_search(q: str, folder: str | None = None):
+def api_search(request: Request, q: str, folder: str | None = None):
     if not q.strip():
         return []
-    rows = db.search_slides(q, folder=folder)
+    rows = db.search_slides(q, folder=folder, user=favorites_owner(request))
     return [
         {
             "file_id": r["file_id"],
@@ -366,8 +371,8 @@ def api_search(q: str, folder: str | None = None):
             "domain": r["domain"],
             "ext": r["ext"],
             "thumb_url": f"/api/thumb/{r['thumb_file']}" if r["thumb_file"] else None,
-            "favorite": bool(r["favorite"]),
-            "tags": db.parse_tags(r["tags"]),
+            "favorite": bool(r["is_favorite"]),
+            "tags": db.parse_tags(r["user_tags"]),
         }
         for r in rows
     ]
@@ -470,10 +475,12 @@ def api_get_settings():
 
 @app.get("/api/storage")
 def api_storage():
-    return {**db.storage_info(), "drafts_dir": settings.get()["drafts_path"]}
+    count, size = fullsize.usage()
+    return {**db.storage_info(), "drafts_dir": settings.get()["drafts_path"],
+            "previews_dir": str(fullsize.CACHE_DIR), "preview_count": count, "previews_bytes": size}
 
 
-_REVEALABLE = {"data": lambda: db.DATA_DIR, "thumbnails": lambda: db.THUMB_DIR,
+_REVEALABLE = {"data": lambda: db.DATA_DIR, "thumbnails": lambda: db.THUMB_DIR, "previews": lambda: fullsize.CACHE_DIR,
                "drafts": lambda: Path(settings.get()["drafts_path"]).expanduser()}
 
 
@@ -572,7 +579,7 @@ def api_delete_draft(draft_id: int):
 
 @app.get("/api/me")
 def api_me(request: Request):
-    return {"name": current_user(request), "default_name": default_user_name()}
+    return {"name": current_user(request), "default_name": users.default_name()}
 
 
 @app.get("/api/version")

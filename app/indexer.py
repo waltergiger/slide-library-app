@@ -96,14 +96,11 @@ def _index_one_file(source_id: int, domain: str, path: Path) -> None:
         mtime=stat.st_mtime,
         size=stat.st_size,
     )
-    favorites = db.carry_favorite_meta(prior, hashes)
+    carried = db.carry_user_favorites(prior, hashes)
     for slide in slides:
         idx = slide["index"]
-        thumb = thumb_paths.get(idx)
-        db.insert_slide(
-            file_id, idx, slide["title"], slide["text"], thumb,
-            favorite=idx in favorites, content_hash=hashes[idx], meta=favorites.get(idx),
-        )
+        db.insert_slide(file_id, idx, slide["title"], slide["text"], thumb_paths.get(idx), content_hash=hashes[idx])
+    db.restore_favorites(file_id, carried)
     db.remove_thumbs(prior.thumbs - set(thumb_paths.values()))
 
 

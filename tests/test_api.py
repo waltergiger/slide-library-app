@@ -189,3 +189,20 @@ def test_added_by_comes_from_the_browser_name_header_sanitised(client, monkeypat
 def test_me_reports_header_name_and_a_default(client):
     me = client.get("/api/me", headers={"X-Slidelib-User": "Ann"}).json()
     assert me["name"] == "Ann" and me["default_name"]
+
+
+def test_favorites_are_per_browser_user(client):
+    sid = db.add_source("/x", "S")
+    fid = add_indexed_file(sid, "/x/a.pptx", [("Wealth", "digital wealth"), ("Other", "misc")])
+    ann, bob = {"X-Slidelib-User": "Ann"}, {"X-Slidelib-User": "Bob"}
+    client.post(f"/api/decks/{fid}/slides/0/favorite", json={"favorite": True}, headers=ann)
+    client.put(f"/api/decks/{fid}/slides/0/tags", json={"tags": ["Board"]}, headers=ann)
+
+    assert [f["title"] for f in client.get("/api/favorites", headers=ann).json()] == ["Wealth"]
+    assert client.get("/api/favorites", headers=bob).json() == []
+    assert client.get("/api/favorites/tags", headers=bob).json() == []
+    assert [s["favorite"] for s in client.get(f"/api/decks/{fid}", headers=ann).json()["slides"]] == [True, False]
+    assert [s["favorite"] for s in client.get(f"/api/decks/{fid}", headers=bob).json()["slides"]] == [False, False]
+    hit = client.get("/api/search", params={"q": "wealth"}, headers=bob).json()[0]
+    assert hit["favorite"] is False and hit["tags"] == []
+    assert client.get("/api/decks", params={"favorites_only": True}, headers=bob).json() == []

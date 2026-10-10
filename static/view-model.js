@@ -3,9 +3,11 @@
 (function (root) {
   "use strict";
 
-  // Discrete steps keep +/- predictable and avoid odd fractional grid widths.
-  const ZOOM_STEPS = [50, 65, 80, 100, 125, 150, 175, 200];
+  // +/- move between these steps; any whole percentage in range can also be typed.
+  const ZOOM_STEPS = [25, 33, 50, 67, 80, 100, 125, 150, 175, 200, 250, 300];
   const DEFAULT_ZOOM = 100;
+  const ZOOM_MIN = ZOOM_STEPS[0];
+  const ZOOM_MAX = ZOOM_STEPS[ZOOM_STEPS.length - 1];
 
   const PANEL = { min: 300, max: 900, def: 400 };
   // Space the library must keep when the panel grows: sidebar (264) + a usable grid column area.
@@ -21,17 +23,19 @@
     return null;
   }
 
-  /** Snap any stored/foreign value to the nearest allowed zoom step. */
+  /** Any stored or typed value ("140", "140%", 140.6) as a whole percentage within range. */
   function normalizeZoom(value) {
-    const n = toNumber(value);
+    const n = toNumber(typeof value === "string" ? value.replace(/%\s*$/, "") : value);
     if (n === null) return DEFAULT_ZOOM;
-    return ZOOM_STEPS.reduce((best, z) => (Math.abs(z - n) < Math.abs(best - n) ? z : best), ZOOM_STEPS[0]);
+    return Math.round(Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, n)));
   }
 
-  /** Next zoom in the direction (+1 / -1); stays put at either end. */
+  /** The next step strictly beyond the current zoom in the direction (+1 / -1), so a
+   *  typed in-between value like 140 goes to 150 / 125; stays put at either end. */
   function stepZoom(current, direction) {
-    const i = ZOOM_STEPS.indexOf(normalizeZoom(current));
-    return ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, i + Math.sign(direction)))];
+    const z = normalizeZoom(current);
+    if (direction > 0) return ZOOM_STEPS.find((s) => s > z) ?? ZOOM_MAX;
+    return [...ZOOM_STEPS].reverse().find((s) => s < z) ?? ZOOM_MIN;
   }
 
   /** Largest panel width that still leaves the library usable at this viewport width. */
@@ -141,9 +145,26 @@
     return out;
   }
 
+  /** The exported deck page by page, mirroring app/exporter.py: a divider per
+   *  chapter when enabled (empty chapters too), then its slides; slides no
+   *  longer in the library are skipped by the export, so they get no page. */
+  function previewSequence(chapters, addDividers) {
+    const pages = [];
+    let skipped = 0;
+    (chapters || []).forEach((ch) => {
+      const name = String(ch.name || "").trim() || "Untitled chapter";
+      if (addDividers) pages.push({ kind: "divider", chapter: name });
+      (ch.slides || []).forEach((s) => {
+        if (s.missing) { skipped += 1; return; }
+        pages.push({ kind: "slide", chapter: name, slide: s });
+      });
+    });
+    return { pages, skipped };
+  }
+
   const api = {
-    fileUrl, ZOOM_STEPS, DEFAULT_ZOOM, PANEL, normalizeZoom, stepZoom, maxPanelWidth, clampPanelWidth,
-    MAX_TAG_LEN, parseTagInput, mergeTags, groupByTag, groupByDate, groupByDomain, dayLabel,
+    fileUrl, ZOOM_STEPS, DEFAULT_ZOOM, ZOOM_MIN, ZOOM_MAX, PANEL, normalizeZoom, stepZoom, maxPanelWidth, clampPanelWidth,
+    MAX_TAG_LEN, parseTagInput, mergeTags, groupByTag, groupByDate, groupByDomain, dayLabel, previewSequence,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ViewModel = api;

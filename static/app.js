@@ -30,6 +30,8 @@
     settings: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="m19.4 15 .1.1a2 2 0 0 1-2.8 2.8l-.1-.1a2 2 0 0 0-3.4 1.4v.2a2 2 0 0 1-4 0v-.2a2 2 0 0 0-3.4-1.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A2 2 0 0 0 1.6 12a2 2 0 0 1 2-2h.2a2 2 0 0 0 1.4-3.4l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A2 2 0 0 0 11.4 4h.2a2 2 0 0 1 2 2v.2A2 2 0 0 0 17 7.6l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A2 2 0 0 0 19.4 15Z"/></svg>`,
     starFill: `<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 2.7 5.9 6.3.7-4.7 4.4 1.3 6.2L12 17.3 6.4 20.2l1.3-6.2-4.7-4.4 6.3-.7Z"/></svg>`,
     grid: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>`,
+    eye: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>`,
+    chevronRight: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>`,
     copy: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>`,
     list: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>`,
   };
@@ -129,6 +131,8 @@
     editingDraft: null,
     saving: false,
     toast: null,
+    preview: null,              // {mode: "grid" | "show", index} while the deck preview is open
+    lightbox: null,             // {items: [slide refs], index, magnified} while a slide is shown large
   };
 
   // ------------------------------------------------------------------ api --
@@ -256,9 +260,13 @@
   function zoomControl() {
     const atMin = state.zoom === ViewModel.ZOOM_STEPS[0];
     const atMax = state.zoom === ViewModel.ZOOM_STEPS[ViewModel.ZOOM_STEPS.length - 1];
-    return `<div class="zoom-control" role="group" aria-label="Zoom slides">
+    return `<div class="zoom-control" role="group" aria-label="Zoom thumbnails">
+      <span class="zoom-label" aria-hidden="true">${ICON.search}</span>
       <button type="button" class="zoom-btn" data-action="zoomOut" aria-label="Zoom out" title="Zoom out" ${atMin ? "disabled" : ""}>${ICON.minus}</button>
-      <button type="button" class="zoom-value" data-action="zoomReset" aria-label="Zoom ${state.zoom}%, click to reset to 100%" title="Reset to 100%">${state.zoom}%</button>
+      <label class="zoom-field" title="Thumbnail size — type a percentage (${ViewModel.ZOOM_MIN}–${ViewModel.ZOOM_MAX}) and press Enter">
+        <span class="sr-only">Thumbnail zoom in percent</span>
+        <input class="zoom-input" type="text" inputmode="numeric" maxlength="5" value="${state.zoom}%" data-zoom-input>
+      </label>
       <button type="button" class="zoom-btn" data-action="zoomIn" aria-label="Zoom in" title="Zoom in" ${atMax ? "disabled" : ""}>${ICON.plus}</button>
     </div>`;
   }
@@ -486,6 +494,8 @@
     app.innerHTML = html
       + (withDecks ? `<datalist id="categoryOptions">${categoriesOf().map((c) => `<option value="${esc(c)}">`).join("")}</datalist>` : "")
       + (withDecks && state.showDrafts ? renderDraftsModal() : "")
+      + (withDecks && state.preview ? renderPreviewModal() : "")
+      + (state.lightbox ? renderLightbox() : "")
       + (rendererPopupVisible() ? renderRendererModal() : "")
       + renderToast();
     rendering = false;
@@ -586,7 +596,7 @@
     const emptyMessage = noTypeSelected
       ? "No file type selected — turn on PPTX or PDF above to see decks."
       : (state.filters.favoritesOnly
-          ? "No favorited slides match these filters yet — star a few slides in a deck first."
+          ? `No slides starred by ${esc(state.userName || "you")} match these filters yet — star a few slides in a deck first.`
           : (state.query ? `No decks match "${esc(state.query)}".` : "No decks indexed yet — add a source directory to get started."));
 
     if (!sectioned) {
@@ -637,7 +647,7 @@
     return `<div class="filter-row">
       ${filterChip("pptx", "PPTX")}
       ${filterChip("pdf", "PDF")}
-      ${filterChip("favoritesOnly", "Favorites", ICON.starFill)}
+      ${filterChip("favoritesOnly", "User Favorites", ICON.starFill)}
     </div>`;
   }
 
@@ -646,7 +656,7 @@
     const b = badgeFor(f.ext);
     const payload = { file_id: f.file_id, slide_index: f.slide_index, title: f.title, deck_title: f.deck_title, thumb_url: f.thumb_url };
     return `<div class="fav-tile">
-      <div class="slide-card" draggable="true" data-drag="source" data-slide="${esc(JSON.stringify(payload))}" data-action="openDeck" data-id="${f.file_id}" role="button" tabindex="0" aria-label="${esc(f.title)}, from ${esc(f.deck_title)}, slide ${f.slide_index + 1}. Drag into the deck panel to add.">
+      <div class="slide-card" draggable="true" data-drag="source" data-lightbox="library" data-slide="${esc(JSON.stringify(payload))}" data-action="openDeck" data-id="${f.file_id}" role="button" tabindex="0" aria-label="${esc(f.title)}, from ${esc(f.deck_title)}, slide ${f.slide_index + 1}. Double-click or Space to view large; drag into the deck panel to add.">
         ${f.thumb_url ? `<img src="${esc(f.thumb_url)}" alt="" draggable="false">` : `<div class="title">${esc(f.title)}</div>`}
         <button type="button" class="star-btn ${f.favorite ? "active" : ""}" data-action="toggleFavorite" data-file-id="${f.file_id}" data-index="${f.slide_index}" data-favorite="${f.favorite ? "1" : "0"}" aria-label="${f.favorite ? "Remove from favorites" : "Mark as favorite"}" aria-pressed="${!!f.favorite}">${f.favorite ? ICON.starFill : ICON.star}</button>
         <div class="slide-index">${f.slide_index + 1}</div>
@@ -702,7 +712,8 @@
   function renderFavoriteSlides() {
     const slides = state.favSlides;
     if (!slides.length) {
-      const msg = state.query ? `No favorite slides match "${esc(state.query)}".` : "No favorite slides yet — star a few slides in a deck first.";
+      const who = esc(state.userName || "you");
+      const msg = state.query ? `None of ${who}’s favorites match "${esc(state.query)}".` : `No favorites for ${who} yet — star a few slides in a deck first. Favorites are personal: each user sees only their own.`;
       return { count: 0, unit: "slide", html: `<div class="empty-state">${ICON.starFill}<span style="font-size:14.5px;">${msg}</span></div>` };
     }
     const groups = state.favGroupBy === "date" ? ViewModel.groupByDate(slides) : ViewModel.groupByTag(slides);
@@ -777,7 +788,7 @@
     const slidesHtml = deck.slides.map((s) => {
       const selected = state.slideSelection.has(s.index);
       const payload = { file_id: deck.id, slide_index: s.index, title: s.title, deck_title: deck.title, thumb_url: s.thumb_url };
-      return `<div class="slide-card ${selected ? "selected" : ""}" draggable="true" data-drag="source" data-slide="${esc(JSON.stringify(payload))}" data-action="toggleSlide" data-index="${s.index}" role="button" tabindex="0" aria-pressed="${selected}" aria-label="${esc(s.title)}, slide ${s.index + 1}">
+      return `<div class="slide-card ${selected ? "selected" : ""}" draggable="true" data-drag="source" data-lightbox="deck" data-slide="${esc(JSON.stringify(payload))}" data-action="toggleSlide" data-index="${s.index}" role="button" tabindex="0" aria-pressed="${selected}" aria-label="${esc(s.title)}, slide ${s.index + 1}. Double-click or Space to view large.">
         ${s.thumb_url
           ? `<img src="${esc(s.thumb_url)}" alt="" draggable="false">`
           : `<div class="title">${esc(s.title)}</div>`}
@@ -835,6 +846,7 @@
     const chaptersHtml = bld.chapters.map((ch) => {
       const slidesHtml = ch.slides.map((s, i) => `
         <div class="chapter-slide ${s.missing ? "is-missing" : ""}" draggable="true" data-drag="slide" data-chapter="${ch.id}" data-slide-index="${i}" tabindex="0"
+             ${s.missing ? "" : `data-lightbox="builder" data-slide="${esc(JSON.stringify(slideRef(s)))}"`}
              title="${esc(s.missing ? "No longer in the library: " + s.title : s.title)}"
              aria-label="${esc(s.title)}, slide ${i + 1} of ${ch.slides.length} in ${esc(ch.name)}${s.missing ? ", missing from library" : ""}. Alt plus arrow keys moves it.">
           <div class="thumb">${s.missing ? `<span class="missing-label">Missing</span>` : (s.thumb_url ? `<img src="${esc(s.thumb_url)}" alt="" draggable="false">` : "")}</div>
@@ -872,6 +884,7 @@
         </div>
         <div class="panel-actions">
           <button type="button" class="btn btn-primary btn-sm" data-action="saveDraft" ${state.saving ? "disabled" : ""}>${ICON.save} Save</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="openPreview" ${totalSlides || (bld.addDividers && bld.chapters.length) ? "" : "disabled"} title="See the deck page by page as it will be exported">${ICON.eye} Preview</button>
           <button type="button" class="btn btn-secondary btn-sm" data-action="exportDeck">${ICON.download} Export .pptx</button>
           <button type="button" class="btn btn-secondary btn-sm" data-action="openSavedDecks">${ICON.folder} Open saved</button>
           <button type="button" class="btn btn-secondary btn-sm" data-action="newDeck">${ICON.plus} New</button>
@@ -1011,6 +1024,70 @@
   }
 
   const draftFilterKey = (d) => (d.category ? "cat:" + d.category : "none");
+
+  // ---- deck preview: what Export will produce, page by page
+  const previewPages = () => ViewModel.previewSequence(state.builder.chapters, state.builder.addDividers);
+
+  function previewFrame(p, n, big) {
+    const inner = p.kind === "divider"
+      ? `<div class="pv-divider"><span>${esc(p.chapter)}</span></div>`
+      : (p.slide.thumb_url ? `<img src="${esc(p.slide.thumb_url)}" alt="" draggable="false">` : `<div class="pv-notext">${esc(p.slide.title)}</div>`);
+    return `<div class="pv-frame ${big ? "big" : ""}">${inner}${big ? "" : `<span class="pv-num">${n}</span>`}</div>`;
+  }
+
+  function renderPreviewModal() {
+    const { pages, skipped } = previewPages();
+    const b = state.builder;
+    const pv = state.preview;
+    const index = Math.max(0, Math.min(pages.length - 1, pv.index || 0));
+    const ratio = b.templatePath ? "16 / 9" : (b.aspectRatio === "4:3" ? "4 / 3" : "16 / 9");
+    const sizeLabel = b.templatePath ? "template size" : (b.aspectRatio || "16:9");
+    const seg = (mode, label) => `<button type="button" class="seg-btn ${pv.mode === mode ? "active" : ""}" data-action="setPreviewMode" data-mode="${mode}" aria-pressed="${pv.mode === mode}">${label}</button>`;
+    const note = skipped ? `<div class="pv-note">${skipped} slide${skipped === 1 ? " is" : "s are"} no longer in the library and will be skipped.</div>` : "";
+
+    let body;
+    if (!pages.length) {
+      body = `<div class="empty-state">${ICON.layers}<span>Nothing to preview yet — add slides to the deck.</span></div>`;
+    } else if (pv.mode === "grid") {
+      let chapter = null;
+      body = `<div class="pv-grid">${pages.map((p, i) => {
+        const head = p.chapter !== chapter ? `<div class="pv-chapter">${esc((chapter = p.chapter))}</div>` : "";
+        return head + `<button type="button" class="pv-cell" data-action="previewGoto" data-index="${i}" aria-label="Page ${i + 1}: ${esc(p.kind === "divider" ? "divider " + p.chapter : p.slide.title)}">${previewFrame(p, i + 1, false)}</button>`;
+      }).join("")}</div>`;
+    } else {
+      const p = pages[index];
+      body = `<div class="pv-show">
+        <button type="button" class="pv-nav" data-action="previewStep" data-step="-1" aria-label="Previous page" ${index === 0 ? "disabled" : ""}>${ICON.chevronLeft}</button>
+        <div class="pv-stage" ${p.kind === "slide" ? `data-lightbox="preview" data-slide="${esc(JSON.stringify(slideRef(p.slide)))}" title="Double-click for full resolution"` : ""}>${previewFrame(p, index + 1, true)}
+          <div class="pv-caption"><strong>${index + 1} / ${pages.length}</strong> · ${esc(p.chapter)}${p.kind === "slide" ? ` · ${esc(p.slide.title)} <span class="pv-src">from ${esc(p.slide.deck_title || "")}</span>` : " · divider"}</div>
+        </div>
+        <button type="button" class="pv-nav" data-action="previewStep" data-step="1" aria-label="Next page" ${index === pages.length - 1 ? "disabled" : ""}>${ICON.chevronRight}</button>
+      </div>`;
+    }
+    return `<div class="modal-backdrop pv-backdrop" data-action="closePreview">
+      <div class="modal pv-modal" role="dialog" aria-modal="true" aria-label="Deck preview" tabindex="-1" style="--pv-ratio:${ratio}" data-stop>
+        <div class="modal-head">
+          <div><h2>${esc(b.title || "Untitled deck")}</h2>
+            <div class="pv-meta">${pages.length} page${pages.length === 1 ? "" : "s"} · ${esc(sizeLabel)} · ${b.addDividers ? "with" : "no"} chapter dividers</div></div>
+          <div class="pv-head-actions">
+            ${pv.mode === "grid" ? zoomControl() : ""}
+            <div class="seg" role="group" aria-label="Preview mode">${seg("grid", "Overview")}${seg("show", "Page by page")}</div>
+            <button type="button" class="btn btn-primary btn-sm" data-action="exportDeck">${ICON.download} Export .pptx</button>
+            <button type="button" class="icon-btn sm" data-action="closePreview" aria-label="Close preview">${ICON.x}</button>
+          </div>
+        </div>
+        ${note}
+        <div class="modal-body pv-body">${body}</div>
+        <div class="pv-hint">${pv.mode === "show" ? "← → to move · Esc for overview" : "Click a page to view it large · Esc to close"}</div>
+      </div>
+    </div>`;
+  }
+
+  function stepPreview(step) {
+    const n = previewPages().pages.length;
+    state.preview.index = Math.max(0, Math.min(n - 1, (state.preview.index || 0) + step));
+    render();
+  }
 
   function renderDraftsModal() {
     const cats = categoriesOf();
@@ -1157,7 +1234,7 @@
       </div>
       <div class="settings-list">
         <section class="settings-section">
-          <div class="settings-section-head"><div><h2>Your name</h2><p>Shown as “added by” on source directories and decks you add. Stored in this browser only — it identifies, it doesn’t log you in.</p></div></div>
+          <div class="settings-section-head"><div><h2>Your name</h2><p>Shown as “added by” on source directories and decks you add, and your User Favorites and tags are kept under it — another name means a separate set of favorites. Stored in this browser only; it identifies, it doesn’t log you in.</p></div></div>
           <div class="field">
             <label for="userName">Name</label>
             <input id="userName" class="input" type="text" maxlength="80" placeholder="First Last" value="${esc(state.userNameForm)}" data-bind="userName">
@@ -1210,6 +1287,7 @@
         ${row("Data folder", st.data_dir, "", "data")}
         ${row("Database", st.db_path, fmtBytes(st.db_bytes), "")}
         ${row("Thumbnails", st.thumbnails_dir, `${st.thumbnail_count} file${st.thumbnail_count === 1 ? "" : "s"} · ${fmtBytes(st.thumbnails_bytes)}`, "thumbnails")}
+        ${row("Large previews", st.previews_dir, `${st.preview_count} converted deck${st.preview_count === 1 ? "" : "s"} · ${fmtBytes(st.previews_bytes)} — cache for the full-resolution view, safe to delete`, st.preview_count ? "previews" : "")}
         ${row("Drafts", st.drafts_dir, "Set above", "drafts")}
       </div>
     </section>`;
@@ -1388,6 +1466,104 @@
     debounceTimers[key] = setTimeout(fn, ms || 250);
   }
 
+  const DBLCLICK_MS = 230;
+  let pendingClick = null;
+
+  async function openDeck(id) {
+    state.view = "deck";
+    render();
+    try { await loadDeck(id); } catch (err) { showToast(String(err.message || err), "error"); }
+    render();
+  }
+
+  function toggleSlide(idx) {
+    if (state.slideSelection.has(idx)) state.slideSelection.delete(idx); else state.slideSelection.add(idx);
+    render();
+  }
+
+  // ---- lightbox: one slide at full resolution
+  function openLightbox(el) {
+    const group = el.getAttribute("data-lightbox");
+    const nodes = [...document.querySelectorAll(`[data-lightbox="${group}"]`)];
+    const items = nodes.map((n) => { try { return JSON.parse(n.dataset.slide); } catch (e) { return null; } }).filter(Boolean);
+    const index = Math.max(0, nodes.indexOf(el));
+    if (!items.length) return;
+    state.lightbox = { items, index, magnified: false };
+    render();
+  }
+
+  const hiresWidth = () => Math.min(2400, Math.round(window.innerWidth * (window.devicePixelRatio || 1) / 160) * 160);
+  const hiresUrl = (s, magnified) => `/api/decks/${s.file_id}/slides/${s.slide_index}/image?w=${magnified ? 2400 : hiresWidth()}`;
+
+  function renderLightbox() {
+    const lb = state.lightbox;
+    const s = lb.items[lb.index];
+    const n = lb.items.length;
+    const url = hiresUrl(s, lb.magnified);
+    const loaded = lightboxLoaded.has(url);
+    const failed = lightboxFailed.get(url);
+    return `<div class="lb-backdrop" data-action="closeLightbox" role="dialog" aria-modal="true" aria-label="Slide ${esc(s.title)}">
+      <div class="lb-top" data-stop>
+        <div class="lb-title"><strong>${esc(s.title)}</strong><span>${esc(s.deck_title || "")} · slide ${s.slide_index + 1}${n > 1 ? ` · ${lb.index + 1} / ${n}` : ""}</span></div>
+        <div class="lb-actions">
+          ${failed ? `<span class="lb-status error" title="${esc(failed)}">Showing thumbnail — ${esc(failed)}</span>` : (loaded ? "" : `<span class="lb-status">Loading full resolution…</span>`)}
+          <button type="button" class="btn btn-secondary btn-sm" data-action="lightboxMagnify">${lb.magnified ? ICON.minus + " Fit to screen" : ICON.plus + " Magnify"}</button>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="openDeckFromLightbox" data-id="${s.file_id}">${ICON.external} Open deck</button>
+          <button type="button" class="icon-btn sm" data-action="closeLightbox" aria-label="Close">${ICON.x}</button>
+        </div>
+      </div>
+      ${n > 1 ? `<button type="button" class="lb-nav prev" data-action="lightboxStep" data-step="-1" aria-label="Previous slide" ${lb.index === 0 ? "disabled" : ""}>${ICON.chevronLeft}</button>` : ""}
+      <div class="lb-stage ${lb.magnified ? "magnified" : ""}" data-stop>
+        <img class="lb-img" src="${esc(loaded ? url : (s.thumb_url || url))}" alt="${esc(s.title)}" data-action="lightboxMagnify" draggable="false">
+        ${loaded || failed ? "" : `<img class="lb-preload" src="${esc(url)}" alt="" data-hires="${esc(url)}">`}
+      </div>
+      ${n > 1 ? `<button type="button" class="lb-nav next" data-action="lightboxStep" data-step="1" aria-label="Next slide" ${lb.index === n - 1 ? "disabled" : ""}>${ICON.chevronRight}</button>` : ""}
+      <div class="lb-hint" data-stop>← → previous / next · click the slide to magnify · Esc to close</div>
+    </div>`;
+  }
+
+  // Remembered across renders so returning to a slide shows it sharp at once.
+  const lightboxLoaded = new Set();
+  const lightboxFailed = new Map();
+  document.addEventListener("load", (e) => {
+    const url = e.target.dataset && e.target.dataset.hires;
+    if (url) { lightboxLoaded.add(url); if (state.lightbox) render(); }
+  }, true);
+  document.addEventListener("error", (e) => {
+    const url = e.target.dataset && e.target.dataset.hires;
+    if (!url) return;
+    fetch(url).then((r) => r.json()).then((j) => j.detail).catch(() => "").then((why) => {
+      lightboxFailed.set(url, why || "The slide could not be rendered.");
+      if (state.lightbox) render();
+    });
+  }, true);
+
+  function stepLightbox(step) {
+    const lb = state.lightbox;
+    lb.index = Math.max(0, Math.min(lb.items.length - 1, lb.index + step));
+    lb.magnified = false;
+    render();
+  }
+
+  document.addEventListener("dblclick", (e) => {
+    if (e.target.closest("button, input, a")) return; // e.g. the star or remove button on a thumbnail
+    const el = e.target.closest("[data-lightbox]");
+    if (!el) return;
+    clearTimeout(pendingClick);
+    e.preventDefault();
+    openLightbox(el);
+  });
+
+  // Typed zoom: commit on Enter or leaving the field; Esc puts the current value back.
+  document.addEventListener("change", (e) => {
+    if (!(e.target.matches && e.target.matches("[data-zoom-input]"))) return;
+    if (/\d/.test(e.target.value)) setZoom(ViewModel.normalizeZoom(e.target.value));
+    else { e.target.value = state.zoom + "%"; } // not a number: keep the current zoom
+  });
+  document.addEventListener("focusin", (e) => {
+    if (e.target.matches && e.target.matches("[data-zoom-input]")) e.target.select();
+  });
+
   document.addEventListener("click", async (e) => {
     const el = e.target.closest("[data-action]");
     if (!el) return;
@@ -1430,17 +1606,17 @@
       return render();
     }
 
-    if (action === "openDeck") {
-      state.view = "deck";
-      render();
-      try { await loadDeck(el.dataset.id); } catch (err) { showToast(String(err.message || err), "error"); }
-      return render();
-    }
-
-    if (action === "toggleSlide") {
-      const idx = Number(el.dataset.index);
-      if (state.slideSelection.has(idx)) state.slideSelection.delete(idx); else state.slideSelection.add(idx);
-      return render();
+    if (action === "openDeck" || action === "toggleSlide") {
+      const run = action === "openDeck" ? () => openDeck(el.dataset.id) : () => toggleSlide(Number(el.dataset.index));
+      // On a thumbnail a double-click means "view large": hold the single click
+      // briefly so it doesn't first navigate away or flip the selection.
+      if (el.hasAttribute("data-lightbox") && e.detail >= 1) {
+        clearTimeout(pendingClick);
+        if (e.detail > 1) return;
+        pendingClick = setTimeout(run, DBLCLICK_MS);
+        return;
+      }
+      return run();
     }
 
     if (action === "toggleFavorite") {
@@ -1510,6 +1686,23 @@
     }
 
     if (action === "exportDeck") return doExport();
+    if (action === "closeLightbox") {
+      if (e.target.closest("[data-stop]") && !e.target.closest('[data-action="closeLightbox"].icon-btn')) return;
+      state.lightbox = null;
+      return render();
+    }
+    if (action === "lightboxStep") return stepLightbox(Number(el.dataset.step));
+    if (action === "lightboxMagnify") { state.lightbox.magnified = !state.lightbox.magnified; return render(); }
+    if (action === "openDeckFromLightbox") { state.lightbox = null; state.preview = null; return openDeck(el.dataset.id); }
+    if (action === "openPreview") { state.preview = { mode: "grid", index: 0 }; return render(); }
+    if (action === "closePreview") {
+      if (el.classList.contains("pv-backdrop") && e.target !== el) return; // clicks inside the dialog bubble here too
+      state.preview = null;
+      return render();
+    }
+    if (action === "setPreviewMode") { state.preview.mode = el.dataset.mode === "show" ? "show" : "grid"; return render(); }
+    if (action === "previewGoto") { state.preview = { mode: "show", index: Number(el.dataset.index) }; return render(); }
+    if (action === "previewStep") return stepPreview(Number(el.dataset.step));
     if (action === "openFile") return openFile(Number(el.dataset.id));
     if (action === "recheckRenderers") return recheckRenderers();
     if (action === "showRendererHelp") { state.dismissRendererHelp = false; return render(); }
@@ -1635,9 +1828,11 @@
     state.settingsSaving = true;
     render();
     try {
+      const previousName = state.userName;
       state.userName = state.userNameForm.split(/\s+/).filter(Boolean).join(" ").slice(0, 80);
       state.userNameForm = state.userName;
       writePref(USER_KEY, state.userName);
+      if (state.userName !== previousName) await refreshDecks(); // favorites belong to the name
       state.settings = await api("/api/settings", { method: "PUT", body: JSON.stringify(state.settingsForm) });
       state.settingsForm = { ...state.settings };
       showToast("Settings saved.");
@@ -1682,6 +1877,23 @@
 
   document.addEventListener("keydown", (e) => {
     const t = e.target;
+    if (t.matches && t.matches("[data-zoom-input]")) {
+      if (e.key === "Enter") { e.preventDefault(); t.blur(); }
+      else if (e.key === "Escape") { e.preventDefault(); t.value = state.zoom + "%"; t.blur(); }
+      return;
+    }
+    if (state.lightbox) {
+      if (e.key === "Escape") { e.preventDefault(); state.lightbox = null; render(); return; }
+      if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown") { e.preventDefault(); stepLightbox(1); return; }
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp") { e.preventDefault(); stepLightbox(-1); return; }
+      if (e.key === " " || e.key === "Enter") { e.preventDefault(); state.lightbox.magnified = !state.lightbox.magnified; render(); return; }
+      return;
+    }
+    if (e.key === " " && t.closest && t.closest("[data-lightbox]") && !t.matches("input, textarea, button")) {
+      e.preventDefault(); // Space = view large, like Quick Look; Enter still selects / opens
+      openLightbox(t.closest("[data-lightbox]"));
+      return;
+    }
     if ((e.key === "Enter" || e.key === " ") && t.matches && t.matches('[role="link"][data-action], [role="button"][data-action]')
         && t.tagName !== "BUTTON" && t.tagName !== "A") {
       e.preventDefault();
@@ -1708,6 +1920,13 @@
       if (e.key === "Enter") { e.preventDefault(); commitTagInput(true); }
       else if (e.key === "Escape") { e.preventDefault(); state.tagEditing = null; render(); }
       return;
+    }
+    if (state.preview) {
+      const show = state.preview.mode === "show";
+      if (e.key === "Escape") { e.preventDefault(); if (show) state.preview.mode = "grid"; else state.preview = null; render(); return; }
+      if (show && (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "PageDown" || e.key === " ")) { e.preventDefault(); stepPreview(1); return; }
+      if (show && (e.key === "ArrowLeft" || e.key === "ArrowUp" || e.key === "PageUp")) { e.preventDefault(); stepPreview(-1); return; }
+      if (show && (e.key === "Home" || e.key === "End")) { e.preventDefault(); stepPreview(e.key === "Home" ? -1e6 : 1e6); return; }
     }
     if (e.key === "Escape" && rendererPopupVisible()) { state.dismissRendererHelp = true; render(); return; }
     if (e.key === "Escape" && state.showDrafts) {

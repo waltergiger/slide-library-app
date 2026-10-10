@@ -56,14 +56,14 @@ class TestCarryFavorites:
 def test_reindex_preserves_favorite_through_reorder_and_removes_stale_thumbs(tmp_db):
     sid = db.add_source("/x", "Dom")
     fid = add_indexed_file(sid, "/x/a.pptx", [("t0", "alpha"), ("t1", "beta")])
-    db.set_slide_favorite(fid, 0, True)
+    db.set_slide_favorite(fid, 0, True, "Ann")
     old_thumbs = {p.name for p in db.THUMB_DIR.iterdir()}
 
     file_id, prior = db.upsert_file(sid, "/x/a.pptx", "Dom", "a", "pptx", 2, 2.0, 2)
     assert file_id == fid and prior.thumbs == old_thumbs
     from app import indexer
-    fav = db.carry_favorites(prior, {0: indexer._content_hash("beta"), 1: indexer._content_hash("alpha")})
-    assert fav == {1}
+    carried = db.carry_user_favorites(prior, {0: indexer._content_hash("beta"), 1: indexer._content_hash("alpha")})
+    assert set(carried) == {"Ann"} and set(carried["Ann"]) == {1}
 
 
 def test_delete_source_removes_its_thumbnails(tmp_db):
@@ -119,15 +119,23 @@ def test_list_favorites_filters_by_domain_and_query(tmp_db):
 def test_favorited_at_is_set_on_star_kept_on_restar_and_cleared_on_unstar(tmp_db):
     sid = db.add_source("/x", "Dom")
     fid = add_indexed_file(sid, "/x/a.pptx", [("t", "a")])
-    db.set_slide_favorite(fid, 0, True)
-    first = db.get_slide(fid, 0)["favorited_at"]
-    assert first
+    db.set_slide_favorite(fid, 0, True, "Ann")
+    assert _fav(fid, 0, "Ann")["favorited_at"]
     with db.get_conn() as c:
-        c.execute("UPDATE slides SET favorited_at = '2020-01-01T00:00:00+00:00'")
-    db.set_slide_favorite(fid, 0, True)
-    assert db.get_slide(fid, 0)["favorited_at"] == "2020-01-01T00:00:00+00:00"
-    db.set_slide_favorite(fid, 0, False)
-    assert db.get_slide(fid, 0)["favorited_at"] is None
+        c.execute("UPDATE favorites SET favorited_at = '2020-01-01T00:00:00+00:00'")
+    db.set_slide_favorite(fid, 0, True, "Ann")
+    assert _fav(fid, 0, "Ann")["favorited_at"] == "2020-01-01T00:00:00+00:00"
+    db.set_slide_tags(fid, 0, ["Keep"], "Ann")
+    db.set_slide_favorite(fid, 0, False, "Ann")
+    row = _fav(fid, 0, "Ann")
+    assert row["starred"] == 0 and row["favorited_at"] is None and db.parse_tags(row["tags"]) == ["Keep"]  # undo keeps tags
+    assert db.set_slide_favorite(fid, 9, True, "Ann") is False
+
+
+def _fav(file_id, slide_index, user):
+    return db.get_conn().execute(
+        "SELECT f.* FROM favorites f JOIN slides s ON s.id = f.slide_id WHERE s.file_id = ? AND s.slide_index = ? AND f.user = ?",
+        (file_id, slide_index, user)).fetchone()
 
 
 def test_normalize_tags_trims_dedupes_and_caps():
@@ -158,15 +166,15 @@ def test_set_slide_tags_and_list_counts_only_favorites(tmp_db):
 def test_reindex_carries_tags_and_date_with_the_star(tmp_db):
     sid = db.add_source("/x", "Dom")
     fid = add_indexed_file(sid, "/x/a.pptx", [("t0", "alpha"), ("t1", "beta")])
-    db.set_slide_favorite(fid, 0, True)
-    db.set_slide_tags(fid, 0, ["Keep"])
-    starred_at = db.get_slide(fid, 0)["favorited_at"]
+    db.set_slide_favorite(fid, 0, True, "Ann")
+    db.set_slide_tags(fid, 0, ["Keep"], "Ann")
+    db.set_slide_favorite(fid, 1, True, "Bob")
+    starred_at = _fav(fid, 0, "Ann")["favorited_at"]
 
-    add_indexed_file(sid, "/x/a.pptx", [("new", "gamma"), ("t1", "beta"), ("t0", "alpha")])  # alpha moved to index 2
-    rows = {r["slide_index"]: r for r in db.list_slides(fid)}
-    assert bool(rows[2]["favorite"]) and db.parse_tags(rows[2]["tags"]) == ["Keep"]
-    assert rows[2]["favorited_at"] == starred_at
-    assert db.parse_tags(rows[0]["tags"]) == [] and rows[0]["favorited_at"] is None
+    add_indexed_file(sid, "/x/a.pptx", [("new", "gamma"), ("t1", "beta"), ("t0", "alpha")])  # alpha moved to 2, beta stays 1
+    assert db.favorite_indices(fid, "Ann") == {2} and db.favorite_indices(fid, "Bob") == {1}
+    assert db.parse_tags(_fav(fid, 2, "Ann")["tags"]) == ["Keep"] and _fav(fid, 2, "Ann")["favorited_at"] == starred_at
+    assert _fav(fid, 0, "Ann") is None
 
 
 def test_migration_adds_tag_and_date_columns(tmp_db):
@@ -285,3 +293,41 @@ def test_migration_backfills_added_at_and_adds_added_by(tmp_db):
     row = conn.execute("SELECT added_at, added_by FROM files").fetchone()
     assert row["added_at"] == "2026-01-02T03:04:05+00:00" and row["added_by"] is None
     assert "added_by" in {r["name"] for r in conn.execute("PRAGMA table_info(sources)")}
+
+
+def test_each_user_has_their_own_stars_and_tags(tmp_db):
+    sid = db.add_source("/x", "D")
+    fid = add_indexed_file(sid, "/x/a.pptx", [("Wealth", "a"), ("Other", "b")])
+    db.set_slide_favorite(fid, 0, True, "Ann")
+    db.set_slide_tags(fid, 0, ["Board"], "Ann")
+    db.set_slide_favorite(fid, 1, True, "Bob")
+    db.set_slide_tags(fid, 1, ["Q3"], "Bob")
+
+    assert [r["title"] for r in db.list_favorites(user="Ann")] == ["Wealth"]
+    assert [r["title"] for r in db.list_favorites(user="Bob")] == ["Other"]
+    assert db.list_favorites(user="Cleo") == []
+    assert [t["name"] for t in db.list_favorite_tags("Ann")] == ["Board"]
+    assert [t["name"] for t in db.list_favorite_tags("Bob")] == ["Q3"]
+    assert [bool(r["is_favorite"]) for r in db.list_slides(fid, "Ann")] == [True, False]
+    assert [bool(r["is_favorite"]) for r in db.list_slides(fid, "Bob")] == [False, True]
+    assert len(db.list_decks(None, None, favorites_only=True, user="Ann")) == 1
+    assert db.list_decks(None, None, favorites_only=True, user="Cleo") == []
+
+    db.set_slide_favorite(fid, 0, False, "Bob")            # Bob un-starring never touches Ann's star
+    assert db.favorite_indices(fid, "Ann") == {0}
+
+
+def test_global_stars_migrate_once_to_the_os_account_name(tmp_db, monkeypatch):
+    from app import users
+    monkeypatch.setattr(users, "default_name", lambda: "Walter Giger")
+    sid = db.add_source("/x", "D")
+    fid = add_indexed_file(sid, "/x/a.pptx", [("t0", "a"), ("t1", "b")])
+    with db.get_conn() as c:                                # a pre-0.5 database: star + tags on the slide row
+        c.execute("UPDATE slides SET favorite = 1, favorited_at = '2026-01-01T00:00:00+00:00', tags = '[\"Keep\"]' "
+                  "WHERE slide_index = 1")
+    db._migrate(db.get_conn())
+    db._migrate(db.get_conn())                              # idempotent
+    assert db.favorite_indices(fid, "Walter Giger") == {1}
+    row = _fav(fid, 1, "Walter Giger")
+    assert row["favorited_at"] == "2026-01-01T00:00:00+00:00" and db.parse_tags(row["tags"]) == ["Keep"]
+    assert db.get_conn().execute("SELECT COUNT(*) FROM slides WHERE favorite = 1").fetchone()[0] == 0

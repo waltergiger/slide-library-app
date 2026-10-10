@@ -148,7 +148,12 @@ opens a file that is in the index, by id, and only supported slide file types;
 if the file was moved or deleted you get a message to re-index. The link's
 address is also a proper `file://` URL, so "Copy link address" works.
 
-### Favorites
+### User Favorites
+
+Favorites are **personal**: every user has their own stars and tags, kept
+under the name set in Settings → *Your name* (so another name means a
+separate set). Stars from before per-user favorites were moved to this
+computer's account name, the name a browser here starts with.
 
 Click the star on any slide — in a deck, in search hits or in the favorites
 list — to mark it a favorite; click it again to unmark it. Favorites
@@ -156,7 +161,7 @@ survive re-indexing (matched by slide text, so reordering or inserting slides
 doesn't move them; a slide edited in place keeps its star while the slide
 count is unchanged), so they won't disappear when files change on disk.
 
-The **★ Favorites** toggle above the deck grid has two modes:
+The **★ User Favorites** toggle above the deck grid has two modes:
 
 - **Favorites alone** (no file type selected) lists the starred slides
   themselves, grouped by **Tags** or by **Date** starred (switch with "Group
@@ -188,13 +193,42 @@ browser; close the terminal (or Ctrl+C) to stop it. Your index and
 thumbnails persist in `data/` between runs — nothing needs reindexing
 unless the files themselves changed.
 
+## Viewing slides large
+
+**Double-click any slide thumbnail** — in the library, a deck, the deck
+panel or the preview — to open it large (or focus it and press **Space**,
+like Quick Look). The thumbnail appears at once and is replaced by a
+full-resolution render sized to your screen; click the slide (or press
+Space/Enter) to **magnify** it further and scroll. ← / → move to the
+previous / next slide of the same view, Esc closes, *Open deck* jumps to it.
+A single click keeps its usual meaning (open the deck / select the slide),
+delayed by a fraction of a second so a double-click can win.
+
+PDF sources render straight from the file. PowerPoint decks are converted
+once (a few seconds on first view) and the result is cached in
+`data/previews` — shown in Settings → Data storage, safe to delete, cleaned
+up automatically when files change. If the source file isn't reachable (e.g.
+a network share isn't mounted) the view says so and shows the thumbnail.
+
+## Previewing a deck
+
+**Preview** in the deck panel shows the deck exactly as **Export** will
+build it: a divider page per chapter (when enabled), then its slides,
+numbered in export order. Slides that are no longer in the library are
+flagged and left out, as the export does. *Overview* shows every page
+grouped by chapter; click a page (or choose *Page by page*) to step through
+large with ← / →, Home / End; Esc goes back to the overview and closes.
+
 ## Zoom and layout
 
-The **− 100% +** control in the top bar scales the thumbnails and cards in the
-library and deck views (50–200%, in steps); click the percentage to reset to
-100%. The **divider** between the library and the deck panel can be dragged
+The zoom control next to the view toggle sizes all thumbnail grids — decks,
+favorites, search hits, a deck's slides and the preview overview. Use − / +
+for the standard steps, or click the percentage, **type any value from 25 to
+300** and press Enter (Esc cancels).
+
+The **divider** between the library and the deck panel can be dragged
 with the mouse (or focused and moved with ← / →, Shift for larger steps;
-double-click resets it to the default width). Both settings are remembered in
+double-click resets it to the default width). Zoom and panel width are remembered in
 your browser, and the panel width is limited so the library always keeps a
 usable area.
 

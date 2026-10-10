@@ -56,12 +56,25 @@ CREATE TABLE IF NOT EXISTS slides (
     title TEXT,
     body_text TEXT,
     thumb_file TEXT,
-    favorite INTEGER NOT NULL DEFAULT 0,
+    favorite INTEGER NOT NULL DEFAULT 0,          -- legacy global star, migrated into `favorites`
     content_hash TEXT,
-    favorited_at TEXT,                            -- when the star was set; NULL for stars older than this column
-    tags TEXT NOT NULL DEFAULT '[]',              -- JSON array of user labels on a favorite
+    favorited_at TEXT,                            -- legacy, see `favorites`
+    tags TEXT NOT NULL DEFAULT '[]',              -- legacy, see `favorites`
     UNIQUE(file_id, slide_index)
 );
+
+-- Per-user stars and tags. A row survives un-starring (starred = 0) so the
+-- slide's tags come back if it is starred again. Rows die with their slide;
+-- re-indexing re-creates them via carry_user_favorites.
+CREATE TABLE IF NOT EXISTS favorites (
+    slide_id INTEGER NOT NULL REFERENCES slides(id) ON DELETE CASCADE,
+    user TEXT NOT NULL,                           -- self-declared name, see app/users.py
+    starred INTEGER NOT NULL DEFAULT 1,
+    favorited_at TEXT,
+    tags TEXT NOT NULL DEFAULT '[]',              -- JSON array of the user's labels
+    PRIMARY KEY (slide_id, user)
+);
+CREATE INDEX IF NOT EXISTS favorites_by_user ON favorites(user, starred);
 
 -- Saved Builder decks. Slides are stored as references (file_id + slide_index,
 -- with a title snapshot for display if the slide later disappears), never as
@@ -151,10 +164,28 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "added_by" not in file_cols:
         conn.execute("ALTER TABLE files ADD COLUMN added_by TEXT")
         conn.commit()
+    _migrate_global_favorites(conn)
     draft_cols = {row["name"] for row in conn.execute("PRAGMA table_info(drafts)")}
     if "category" not in draft_cols:
         conn.execute("ALTER TABLE drafts ADD COLUMN category TEXT")
         conn.commit()
+
+
+def _migrate_global_favorites(conn: sqlite3.Connection) -> None:
+    """Stars from before per-user favorites belonged to whoever used this
+    machine, so they move to the OS account name — the name a browser here
+    defaults to — and are cleared on the slide so this runs once."""
+    if not conn.execute("SELECT 1 FROM slides WHERE favorite = 1 LIMIT 1").fetchone():
+        return
+    from . import users
+    conn.execute(
+        """INSERT OR IGNORE INTO favorites (slide_id, user, starred, favorited_at, tags)
+           SELECT id, ?, 1, favorited_at, CASE WHEN json_valid(tags) THEN tags ELSE '[]' END
+           FROM slides WHERE favorite = 1""",
+        (users.default_name(),),
+    )
+    conn.execute("UPDATE slides SET favorite = 0, favorited_at = NULL, tags = '[]' WHERE favorite = 1")
+    conn.commit()
 
 
 # ---- storage locations -------------------------------------------------------
@@ -266,11 +297,13 @@ class PriorFile:
 
     def __init__(self, favorites: list[tuple[int, str | None]] | None = None,
                  slide_count: int = 0, thumbs: set[str] | None = None,
-                 meta: dict[int, FavoriteMeta] | None = None):
+                 meta: dict[int, FavoriteMeta] | None = None,
+                 by_user: dict[str, PriorFile] | None = None):
         self.favorites = favorites or []
         self.slide_count = slide_count
         self.thumbs = thumbs or set()
         self.meta = meta or {}  # old slide_index -> what travels with its star
+        self.by_user = by_user or {}  # each user's stars, matched independently
 
 
 class FavoriteMeta:
@@ -287,6 +320,11 @@ def carry_favorites(prior: PriorFile, new_hashes: dict[int, str | None]) -> set[
 def carry_favorite_meta(prior: PriorFile, new_hashes: dict[int, str | None]) -> dict[int, FavoriteMeta]:
     """New slide index -> the date and tags its inherited star carries."""
     return {new: prior.meta.get(old, FavoriteMeta()) for new, old in match_favorites(prior, new_hashes).items()}
+
+
+def carry_user_favorites(prior: PriorFile, new_hashes: dict[int, str | None]) -> dict[str, dict[int, FavoriteMeta]]:
+    """user -> {new slide index -> date and tags}, each user's stars matched on their own."""
+    return {user: carry_favorite_meta(p, new_hashes) for user, p in prior.by_user.items()}
 
 
 def match_favorites(prior: PriorFile, new_hashes: dict[int, str | None]) -> dict[int, int]:
@@ -322,15 +360,22 @@ def upsert_file(source_id, path, domain, title, ext, slide_count, mtime, size) -
     row = conn.execute("SELECT id, slide_count FROM files WHERE path = ?", (path,)).fetchone()
     if row:
         file_id = row["id"]
-        old = conn.execute(
-            "SELECT slide_index, favorite, content_hash, thumb_file, favorited_at, tags FROM slides WHERE file_id = ?",
+        old = conn.execute("SELECT thumb_file FROM slides WHERE file_id = ?", (file_id,)).fetchall()
+        stars = conn.execute(
+            """SELECT f.user, s.slide_index, s.content_hash, f.favorited_at, f.tags
+               FROM favorites f JOIN slides s ON s.id = f.slide_id
+               WHERE s.file_id = ? AND f.starred = 1""",
             (file_id,),
         ).fetchall()
+        by_user: dict[str, PriorFile] = {}
+        for r in stars:
+            p = by_user.setdefault(r["user"], PriorFile(slide_count=row["slide_count"]))
+            p.favorites.append((r["slide_index"], r["content_hash"]))
+            p.meta[r["slide_index"]] = FavoriteMeta(r["favorited_at"], parse_tags(r["tags"]))
         prior = PriorFile(
-            favorites=[(r["slide_index"], r["content_hash"]) for r in old if r["favorite"]],
             slide_count=row["slide_count"],
             thumbs={r["thumb_file"] for r in old if r["thumb_file"]},
-            meta={r["slide_index"]: FavoriteMeta(r["favorited_at"], parse_tags(r["tags"])) for r in old if r["favorite"]},
+            by_user=by_user,
         )
         conn.execute(
             """UPDATE files SET domain=?, title=?, ext=?, slide_count=?, mtime=?, size=?, indexed_at=?
@@ -351,31 +396,62 @@ def upsert_file(source_id, path, domain, title, ext, slide_count, mtime, size) -
     return file_id, prior
 
 
-def insert_slide(file_id, slide_index, title, body_text, thumb_file, favorite=False, content_hash=None,
-                 meta: FavoriteMeta | None = None) -> None:
-    meta = meta or FavoriteMeta()
+def insert_slide(file_id, slide_index, title, body_text, thumb_file, content_hash=None) -> None:
     conn = get_conn()
     conn.execute(
-        """INSERT INTO slides (file_id, slide_index, title, body_text, thumb_file, favorite, content_hash, favorited_at, tags)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (file_id, slide_index, title, body_text, thumb_file, 1 if favorite else 0, content_hash,
-         meta.favorited_at if favorite else None, json.dumps(meta.tags if favorite else [])),
+        """INSERT INTO slides (file_id, slide_index, title, body_text, thumb_file, content_hash)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (file_id, slide_index, title, body_text, thumb_file, content_hash),
     )
     conn.commit()
 
 
-def set_slide_favorite(file_id: int, slide_index: int, favorite: bool) -> bool:
-    # Re-starring an already starred slide keeps its original date; tags stay
-    # on an unstarred slide so an accidental un-star can be undone losslessly.
+def restore_favorites(file_id: int, carried: dict[str, dict[int, FavoriteMeta]]) -> None:
+    """Re-applies stars carried through a re-index (see carry_user_favorites)."""
     conn = get_conn()
-    cur = conn.execute(
-        """UPDATE slides SET favorite = ?,
-               favorited_at = CASE WHEN ? = 0 THEN NULL WHEN favorite = 1 THEN favorited_at ELSE ? END
-           WHERE file_id = ? AND slide_index = ?""",
-        (1 if favorite else 0, 1 if favorite else 0, now(), file_id, slide_index),
-    )
+    for user, by_index in carried.items():
+        for idx, meta in by_index.items():
+            conn.execute(
+                """INSERT OR REPLACE INTO favorites (slide_id, user, starred, favorited_at, tags)
+                   SELECT id, ?, 1, ?, ? FROM slides WHERE file_id = ? AND slide_index = ?""",
+                (user, meta.favorited_at, json.dumps(meta.tags), file_id, idx),
+            )
     conn.commit()
-    return cur.rowcount > 0
+
+
+def _slide_id(file_id: int, slide_index: int) -> int | None:
+    row = get_conn().execute(
+        "SELECT id FROM slides WHERE file_id = ? AND slide_index = ?", (file_id, slide_index)
+    ).fetchone()
+    return row["id"] if row else None
+
+
+def set_slide_favorite(file_id: int, slide_index: int, favorite: bool, user: str = "") -> bool:
+    # Re-starring an already starred slide keeps its original date; un-starring
+    # keeps the row (and its tags) so an accidental un-star is undone losslessly.
+    slide_id = _slide_id(file_id, slide_index)
+    if slide_id is None:
+        return False
+    conn = get_conn()
+    if favorite:
+        conn.execute(
+            """INSERT INTO favorites (slide_id, user, starred, favorited_at) VALUES (?, ?, 1, ?)
+               ON CONFLICT (slide_id, user) DO UPDATE SET
+                   favorited_at = CASE WHEN starred = 1 THEN favorited_at ELSE excluded.favorited_at END,
+                   starred = 1""",
+            (slide_id, user, now()),
+        )
+    else:
+        conn.execute("UPDATE favorites SET starred = 0, favorited_at = NULL WHERE slide_id = ? AND user = ?",
+                     (slide_id, user))
+    conn.commit()
+    return True
+
+
+def favorite_indices(file_id: int, user: str = "") -> set[int]:
+    return {r["slide_index"] for r in get_conn().execute(
+        """SELECT s.slide_index FROM favorites f JOIN slides s ON s.id = f.slide_id
+           WHERE s.file_id = ? AND f.user = ? AND f.starred = 1""", (file_id, user))}
 
 
 MAX_TAGS = 20
@@ -403,26 +479,37 @@ def parse_tags(raw: str | None) -> list[str]:
     return [t for t in value if isinstance(t, str)] if isinstance(value, list) else []
 
 
-def set_slide_tags(file_id: int, slide_index: int, tags: list[str]) -> list[str] | None:
-    """Returns the stored (normalized) tags, or None if the slide doesn't exist."""
+def set_slide_tags(file_id: int, slide_index: int, tags: list[str], user: str = "") -> list[str] | None:
+    """Stores the user's (normalized) tags; None if the slide doesn't exist."""
+    slide_id = _slide_id(file_id, slide_index)
+    if slide_id is None:
+        return None
     clean = normalize_tags(tags)
     conn = get_conn()
-    cur = conn.execute(
-        "UPDATE slides SET tags = ? WHERE file_id = ? AND slide_index = ?",
-        (json.dumps(clean), file_id, slide_index),
+    conn.execute(
+        """INSERT INTO favorites (slide_id, user, starred, tags) VALUES (?, ?, 0, ?)
+           ON CONFLICT (slide_id, user) DO UPDATE SET tags = excluded.tags""",
+        (slide_id, user, json.dumps(clean)),
     )
     conn.commit()
-    return clean if cur.rowcount else None
+    return clean
 
 
-def list_favorite_tags() -> list[dict]:
+def list_favorite_tags(user: str = "") -> list[dict]:
     rows = get_conn().execute(
         """SELECT j.value AS name, COUNT(*) AS count
-           FROM slides, json_each(slides.tags) AS j
-           WHERE slides.favorite = 1 AND json_valid(slides.tags)
-           GROUP BY j.value ORDER BY j.value COLLATE NOCASE"""
+           FROM favorites f, json_each(f.tags) AS j
+           WHERE f.user = ? AND f.starred = 1 AND json_valid(f.tags)
+           GROUP BY j.value ORDER BY j.value COLLATE NOCASE""",
+        (user,),
     ).fetchall()
     return [{"name": r["name"], "count": r["count"]} for r in rows]
+
+
+# Per-user star and tags as extra columns on a `slides` row; takes the user twice.
+_USER_FAV_COLS = """
+    EXISTS (SELECT 1 FROM favorites f WHERE f.slide_id = slides.id AND f.user = ? AND f.starred = 1) AS is_favorite,
+    (SELECT f.tags FROM favorites f WHERE f.slide_id = slides.id AND f.user = ?) AS user_tags"""
 
 
 def delete_files_not_in(source_id: int, keep_paths: set[str]) -> None:
@@ -549,7 +636,7 @@ def _finish_node(node: dict) -> dict:
 
 
 def list_decks(domain: str | None, query: str | None, favorites_only: bool = False,
-               folder: str | None = None) -> list[sqlite3.Row]:
+               folder: str | None = None, user: str = "") -> list[sqlite3.Row]:
     conn = get_conn()
     sql = f"SELECT files.*, {_COVER_SQL} FROM files"
     clauses, params = [], []
@@ -567,16 +654,18 @@ def list_decks(domain: str | None, query: str | None, favorites_only: bool = Fal
         params.append(_fts_query(query))
         params.append(_like_pattern(query))
     if favorites_only:
-        clauses.append("id IN (SELECT file_id FROM slides WHERE favorite = 1)")
+        clauses.append("id IN (SELECT s.file_id FROM slides s JOIN favorites f ON f.slide_id = s.id "
+                       "WHERE f.user = ? AND f.starred = 1)")
+        params.append(user)
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY added_at DESC, title COLLATE NOCASE"
     return conn.execute(sql, params).fetchall()
 
 
-def list_slides(file_id: int) -> list[sqlite3.Row]:
+def list_slides(file_id: int, user: str = "") -> list[sqlite3.Row]:
     return get_conn().execute(
-        "SELECT * FROM slides WHERE file_id = ? ORDER BY slide_index", (file_id,)
+        f"SELECT slides.*, {_USER_FAV_COLS} FROM slides WHERE file_id = ? ORDER BY slide_index", (user, user, file_id)
     ).fetchall()
 
 
@@ -596,12 +685,13 @@ def _fts_query(q: str) -> str:
     return " ".join(f'"{t}"*' for t in tokens) or '""'
 
 
-def search_slides(query: str, limit: int = 40, folder: str | None = None) -> list[sqlite3.Row]:
+def search_slides(query: str, limit: int = 40, folder: str | None = None, user: str = "") -> list[sqlite3.Row]:
     # Folder is filtered in SQL, not by the caller, so the LIMIT applies to in-folder hits only.
     conn = get_conn()
     folder_sql, params = ("AND files.path LIKE ? ESCAPE '\\'", [folder_like(folder)]) if folder else ("", [])
     sql = f"""
-        SELECT slides.*, files.title AS deck_title, files.domain AS domain, files.ext AS ext, files.path AS file_path
+        SELECT slides.*, files.title AS deck_title, files.domain AS domain, files.ext AS ext, files.path AS file_path,
+               {_USER_FAV_COLS}
         FROM slides_fts
         JOIN slides ON slides.id = slides_fts.rowid
         JOIN files ON files.id = slides.file_id
@@ -609,12 +699,13 @@ def search_slides(query: str, limit: int = 40, folder: str | None = None) -> lis
         ORDER BY rank
         LIMIT ?
     """
-    return conn.execute(sql, (_fts_query(query), *params, limit)).fetchall()
+    return conn.execute(sql, (user, user, _fts_query(query), *params, limit)).fetchall()
 
 
-def list_favorites(domain: str | None = None, query: str | None = None, folder: str | None = None) -> list[sqlite3.Row]:
+def list_favorites(domain: str | None = None, query: str | None = None, folder: str | None = None,
+                   user: str = "") -> list[sqlite3.Row]:
     conn = get_conn()
-    clauses, params = ["slides.favorite = 1"], []
+    clauses, params = ["f.starred = 1"], []
     if domain and domain != "All domains":
         clauses.append("files.domain = ?")
         params.append(domain)
@@ -629,13 +720,15 @@ def list_favorites(domain: str | None = None, query: str | None = None, folder: 
         params.append(_fts_query(query))
         params.append(_like_pattern(query))
     sql = f"""
-        SELECT slides.*, files.title AS deck_title, files.domain AS domain, files.ext AS ext, files.path AS file_path
+        SELECT slides.*, files.title AS deck_title, files.domain AS domain, files.ext AS ext, files.path AS file_path,
+               f.favorited_at AS fav_at, f.tags AS fav_tags
         FROM slides
         JOIN files ON files.id = slides.file_id
+        JOIN favorites f ON f.slide_id = slides.id AND f.user = ?
         WHERE {" AND ".join(clauses)}
         ORDER BY files.domain, files.title, slides.slide_index
     """
-    return conn.execute(sql, params).fetchall()
+    return conn.execute(sql, (user, *params)).fetchall()
 
 
 # ---- drafts (saved Builder decks) ------------------------------------------

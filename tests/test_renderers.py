@@ -406,7 +406,7 @@ def test_favorites_survive_the_late_thumbnail_pass(tmp_db, tmp_path, monkeypatch
     db.set_slide_favorite(deck["id"], 1, True)
     use(monkeypatch, Fake("libreoffice"))
     indexer.index_source(sid)
-    assert [bool(r["favorite"]) for r in db.list_slides(deck["id"])] == [False, True, False]
+    assert db.favorite_indices(deck["id"]) == {1}
 
 
 def test_a_pdf_with_the_wrong_page_count_yields_no_thumbnails_instead_of_wrong_ones(tmp_db, tmp_path, monkeypatch):
